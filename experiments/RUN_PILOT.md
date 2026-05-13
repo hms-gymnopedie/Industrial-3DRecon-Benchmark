@@ -45,7 +45,83 @@ bash experiments/scripts/download_weights.sh --dest "${WEIGHTS_DIR}"
 
 ## 3. Raw frames → ARS layout 재배치 (symlink)
 
-사용자 video-to-image 모듈로 추출된 PNG (`${RAW_FRAMES}/{site}/{run}/*.png`) 를 ARS 표준 layout 으로 symlink 변환.
+### 3.1 사용자 video-to-image 모듈 기능 (사전 통합)
+
+본 pilot 에서 사용하는 사용자 video-to-image 전처리 모듈은 PAPER §3.2 의 4 sub-stage 를 사전 통합한 단일 도구이다:
+
+| Sub-stage | 기능 | PAPER §3.2 매핑 |
+|---|---|---|
+| (1) | **비디오 불러오기** | input — raw bodycam video |
+| (2) | **Frame 나누기** | (a) FPS-based frame extraction |
+| (3) | **Blur 자동삭제** | (b) Laplacian variance 기반 sharpness threshold |
+| (4) | **유사도 기준 중복제거** | (c) similarity-based deduplication |
+| (5) | **Masking 처리** | (d) SAM2 / YOLOv8-seg instance mask |
+
+따라서 본 pilot 의 docker 컨테이너 내부에서는 §3.2 의 4 sub-stage 를 *재실행하지 않으며*, 사용자 모듈 출력 (sharp + mask) 을 그대로 P1 / P9 의 학습 입력으로 사용한다.
+
+### 3.2 사용자 모듈 출력 layout
+
+site/run 아래 `sharp/` (RGB frame) + `mask/` (dynamic instance mask) 두 sub-folder 로 분리 출력:
+
+```
+${RAW_FRAMES}/{site}/{run}/sharp/*.png   ← 학습 입력 frame (blur 제거 + dedup 통과)
+${RAW_FRAMES}/{site}/{run}/mask/*.png    ← sharp 와 1:1 매칭되는 dynamic instance mask
+```
+
+### 3.3 Sharp JPG → PNG 정규화 (필요 시 1회)
+
+사용자 video-to-image 모듈이 sharp 를 JPG, mask 를 PNG 로 출력하는 경우 sharp 도 PNG 로 통일한다 (mask 는 이미 PNG 면 skip). 이유: (i) `mast3r_slam_to_colmap.py` 와 `reorganize_frames.sh` 의 PNG-only glob 호환, (ii) PSNR/SSIM noise floor 의 JPEG-artifact-induced underestimate 제거, (iii) §3.6 F3 fairness 일관성 (`data/README.md` §5 PNG lossless 정책).
+
+```bash
+# Option A — ImageMagick mogrify (가장 빠름, 권장 — apt install imagemagick)
+for SITE in I-1 I-2 I-3 L-1 L-2 L-3; do
+    SHARP_DIR="${RAW_FRAMES}/${SITE}/run-01/sharp"
+    [ -d "${SHARP_DIR}" ] || continue
+    cd "${SHARP_DIR}"
+    n_jpg=$(ls *.jpg 2>/dev/null | wc -l)
+    [ "${n_jpg}" -eq 0 ] && continue
+    echo "[${SITE}] ${n_jpg} JPG → PNG"
+    mogrify -format png *.jpg
+    rm -f *.jpg
+done
+```
+
+```bash
+# Option B — Python PIL (ImageMagick 부재 시; Pillow 만 필요)
+python3 <<'EOF'
+import os, glob
+from PIL import Image
+RAW = os.environ.get("RAW_FRAMES", "/data/minsuh/raw_frames")
+for site in ["I-1","I-2","I-3","L-1","L-2","L-3"]:
+    sharp_dir = f"{RAW}/{site}/run-01/sharp"
+    if not os.path.isdir(sharp_dir): continue
+    n = 0
+    for jpg in sorted(glob.glob(f"{sharp_dir}/*.jpg")):
+        png = jpg.rsplit(".",1)[0] + ".png"
+        if not os.path.exists(png):
+            Image.open(jpg).save(png, "PNG", compress_level=1)
+            n += 1
+        os.remove(jpg)
+    print(f"  [{site}] {n} files converted")
+EOF
+```
+
+검증:
+```bash
+for SITE in I-1 I-2 I-3 L-1 L-2 L-3; do
+    NS=$(ls "${RAW_FRAMES}/${SITE}/run-01/sharp"/*.png 2>/dev/null | wc -l)
+    NM=$(ls "${RAW_FRAMES}/${SITE}/run-01/mask"/*.png 2>/dev/null | wc -l)
+    LEFT_JPG=$(ls "${RAW_FRAMES}/${SITE}/run-01/sharp"/*.jpg 2>/dev/null | wc -l)
+    echo "  ${SITE}: sharp_png=${NS}, mask_png=${NM}, leftover_jpg=${LEFT_JPG}"
+done
+# leftover_jpg 는 모두 0 이어야 함
+```
+
+비용: ImageMagick 기준 6 site ~5-10 min, 디스크 ~2-3× 증가 (1,500 frame × 6 site × 1920×1080 기준 ~5 GB JPG → ~15 GB PNG). PIL 옵션은 ~20-30 min.
+
+### 3.4 ARS layout symlink 변환
+
+ARS 표준 layout 으로 symlink (sharp → `frames/`, mask → `masks/`):
 
 ```bash
 bash experiments/scripts/reorganize_frames.sh \
@@ -55,9 +131,35 @@ bash experiments/scripts/reorganize_frames.sh \
     --runs  "run-01" \
     --mode  symlink
 
-# 결과: ${DATA_ROOT}/sites/{site}/runs/{run}/frames/*.png  (각 PNG 는 symlink)
+# 결과:
+#   ${DATA_ROOT}/sites/{site}/runs/{run}/frames/*.png   (sharp 와 mapping)
+#   ${DATA_ROOT}/sites/{site}/runs/{run}/masks/*.png    (mask 와 mapping)
 # dry-run plan 확인: 위 명령에 --dry-run 추가
 ```
+
+### 3.5 Mask 사용 정책
+
+- P1 / P9 의 *primary 학습 입력은 frames/ 만* 사용 (mask 미참조)
+- masks/ 는 §4.5e cluster B.1 ablation (mask on/off condition) 분기에서만 활성화
+- 사용자 측에 mask 폴더가 없는 site/run 이 있으면 자동 skip (warning 만 출력). frames/ 는 단독으로도 P1/P9 실행 가능.
+- 사용자 video-to-image 모듈이 §3.2 의 sub-stage (a)–(d) 4단계를 사전 통합한 상태이므로 PAPER §3.2 의 docker 내부 전처리 재실행은 본 pilot 에서 skip.
+
+### 3.6 Frame budget 확인 (§3.6 F4)
+
+§3.6 F4 의 frame budget (N_frames = 1,500) 은 *dedup 통과 후 effective frame 수* 로 정의. site 별 sharp/ 폴더의 PNG 수를 확인하여 정규화:
+
+```bash
+for SITE in I-1 I-2 I-3 L-1 L-2 L-3; do
+    N=$(find "${RAW_FRAMES}/${SITE}/run-01/sharp" -name "*.png" 2>/dev/null | wc -l)
+    echo "  ${SITE}: N_frames = ${N}"
+done
+```
+
+| 결과 | 처리 |
+|---|---|
+| N ≥ 1,500 | 등간격 sub-sample 로 1,500 frame trim (run_pipeline_*.sh 내부 자동) |
+| N < 1,500 | dense temporal resampling 으로 1,500 frame 충전 (run_pipeline_*.sh 내부) |
+| N << 1,500 (e.g., < 500) | 사용자 video-to-image 모듈의 dedup threshold 가 과도 — 재추출 권장 |
 
 ---
 

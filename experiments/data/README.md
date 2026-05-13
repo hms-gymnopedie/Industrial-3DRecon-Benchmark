@@ -35,16 +35,38 @@ sites/I-1/
 │   └── intrinsics.json      ← bodycam fx, fy, cx, cy, distortion
 └── runs/
     ├── run-01/
-    │   ├── frames/
-    │   │   ├── 000000.png
-    │   │   ├── 000001.png
+    │   ├── frames/              ← sharp RGB PNG (학습 입력)
+    │   │   ├── 0001.png
+    │   │   ├── 0002.png
     │   │   └── ...
-    │   └── frames_meta.json ← timestamp, capture FPS
+    │   ├── masks/               ← dynamic instance mask PNG (선택)
+    │   │   ├── 0001.png         ← frames/0001.png 과 1:1 대응
+    │   │   ├── 0002.png
+    │   │   └── ...
+    │   └── frames_meta.json     ← timestamp, capture FPS
     ├── run-02/
     └── run-03/
 ```
 
 각 site에 대해 **최소 3 capture run** 권장 (RRT* navigation runs와 별개; 본 절은 영상 capture run).
+
+**`frames/` vs `masks/` 관계:**
+- `frames/` 가 *primary input*. P1 / P9 모두 이 폴더의 PNG 를 학습 입력으로 사용.
+- `masks/` 는 PAPER §3.2 (d) 의 dynamic instance mask 산출물 (SAM2/YOLO 계). 사용자 video-to-image preprocessing 모듈이 frame 추출과 동시에 1:1 매칭되는 mask 를 생성한 경우 본 폴더에 배치.
+- `masks/` 가 존재하면 §4.5e cluster B.1 ablation 의 `--mask on/off` 두 condition 양쪽 모두 즉시 실행 가능. 없으면 SAM2/YOLO 를 docker 내부에서 호출하는 fallback path 가 필요.
+- 파일명 매칭: `frames/0001.png` ↔ `masks/0001.png` (확장자 포함 동일 파일명; binary mask 도 PNG 로 저장).
+
+**`frames/` 생성 경로 — 사용자 video-to-image 모듈 (사전 통합):**
+
+본 ARS pilot 의 사용자 측 video-to-image 전처리 모듈은 PAPER §3.2 의 4 sub-stage 를 사전 통합한 단일 도구이다:
+
+1. **비디오 불러오기** — input raw bodycam video
+2. **Frame 나누기** — FPS-based 균일 downsample (default 5 fps) [§3.2(a)]
+3. **Blur 자동삭제** — Laplacian variance threshold [§3.2(b)]
+4. **유사도 기준 중복제거** — visually redundant frame 제거 [§3.2(c)]
+5. **Masking 처리** — SAM2 / YOLOv8-seg instance mask 자동 생성 [§3.2(d)]
+
+따라서 `frames/` 의 PNG 수 N 은 raw video frame 수가 아닌 *4 sub-stage 통과 후 effective frame 수*. §3.6 F4 의 frame budget 1,500 은 본 effective N 에 대한 정의이며, run_pipeline_*.sh 가 sub-sample / dense resample 로 정규화한다.
 
 ---
 
@@ -96,11 +118,13 @@ notes: |
 
 ## 5. `frames/` 규약
 
-- 파일명: 6자리 zero-pad PNG (`000000.png` ~ `0NNNNN.png`)
-- 색공간: sRGB 8-bit (필요 시 raw에서 변환)
-- 압축: PNG lossless (jpeg 사용 금지 — repeatable artifact 방지)
-- 해상도: capture 원본 유지 (downscale은 pipeline 내부 책임)
-- frame index = capture timestamp 순서 (오름차순)
+- **파일명:** zero-pad numeric PNG (권장 6자리 `000001.png` ~ `999999.png`, 동일 site/run 내 *동일 자릿수* 필수). 시간 순서로 lexicographic sort 가 가능해야 한다. `1.png, 2.png, ..., 10.png` 같은 no-padding 명명은 sort 가 `1, 10, 2, ...` 로 깨지므로 금지.
+- **확장자:** 소문자 `.png` 만 인식 (`mast3r_slam_to_colmap.py::list_frames()` 가 `.suffix.lower() == ".png"` 매칭). `.PNG` / `.jpg` / `.jpeg` 는 자동 skip.
+- **색공간:** sRGB 8-bit (필요 시 raw 에서 변환).
+- **압축:** PNG lossless (JPEG 사용 금지 — repeatable artifact 방지 + novel-view PSNR/SSIM noise floor 고정).
+- **해상도:** capture 원본 유지 (downscale 은 pipeline 내부 책임).
+- **Frame index = capture timestamp 순서 (오름차순).** 사용자 video-to-image 모듈의 dedup (§3.2 (c) dHash) 으로 인해 index 가 sparse 해도 (예: 0001, 0003, 0007, ...) lexicographic sort 가 temporal order 와 일치하면 OK.
+- **sharp ↔ mask 1:1 파일명 매칭 (필수):** `frames/000001.png` 의 dynamic instance mask 는 정확히 `masks/000001.png`. 확장자 포함 동일 파일명. mask 가 일부 frame 에서만 존재하는 경우 (skip_empty 정책) — 해당 frame 만 mask 미참조하고 frame 자체는 학습에 포함 (mask off 와 동등). 단 §4.5e cluster B.1 ablation 의 mask on/off condition 비교 시 mask 가 존재하는 frame 만 paired comparison 에 사용.
 
 ---
 

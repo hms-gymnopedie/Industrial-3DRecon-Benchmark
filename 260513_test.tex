@@ -1,0 +1,50 @@
+% !TEX program = lualatex
+% NOTE: This template must be compiled with LuaLaTeX.
+
+\documentclass[12pt, a4paper]{report}
+
+\input{preamable}
+
+\begin{document}
+  % ------------------- FRONT -------------------
+  \include{contents/frontmatter/titlepage}
+  \pagenumbering{roman}
+  \include{contents/frontmatter/dedication}
+  \include{contents/frontmatter/acknowledgments}
+  \include{contents/frontmatter/abstract}
+
+  % ------------------- TABLE OF CONTENTS -------------------
+  \makeatletter
+  \renewcommand{\@tocrmarg}{4em}
+  \makeatother
+
+  \tableofcontents
+
+  \newpage
+
+  % ------------------- CHAPTERS -------------------
+  \pagenumbering{arabic}
+  \include{contents/chapters/introduction}
+  \include{contents/chapters/objectives}
+  \include{contents/chapters/theoretical_framework}
+  \include{contents/chapters/analysis_of_the_current_situation}
+  \include{contents/chapters/work_plan}
+  \include{contents/chapters/results}
+  \include{contents/chapters/conclusions}
+
+  % ------------------- BACK -------------------
+  \printbibliography
+  [heading=bibintoc]
+
+  \clearpage
+  \addcontentsline{toc}{chapter}{List of Tables}
+  \listoftables
+
+  \clearpage
+  \addcontentsline{toc}{chapter}{List of Figures}
+  \listoffigures
+
+  \include{contents/backmatter/appendices}
+
+  % ------------------- END -------------------
+\end{document}
