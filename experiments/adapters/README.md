@@ -84,7 +84,63 @@ docker run --rm \
 
 ---
 
-## 2. Future Adapters (Tier 3 예정)
+## 2. `colmap_to_intrinsics.py` — P1 self-calibration → site-shared intrinsics
+
+P1 (M1 COLMAP) 의 self-calibration 결과 (sparse/0/cameras.{txt,bin}) 로부터 OPENCV 8-param intrinsics JSON 을 추출하여, **P9 (M7 MASt3R-SLAM) 의 intrinsics 입력으로 재사용**한다. 체커보드 calibration 없이 site 단위 self-calib 만으로 pilot 진입을 가능하게 하는 어댑터.
+
+### 2.1 입력 / 출력
+
+| 항목 | 경로 (예시) | 포맷 |
+|---|---|---|
+| 입력 | `data/outputs/P1/{site}/{run}/pose/sparse/0/cameras.bin` (또는 `.txt`) | COLMAP camera model |
+| 출력 | `data/sites/{site}/calib/intrinsics.json` | OPENCV 8-param JSON (`mast3r_slam_to_colmap.py` 의 `load_intrinsics()` schema 호환) |
+
+지원 모델 — OPENCV / PINHOLE / SIMPLE_PINHOLE / SIMPLE_RADIAL / RADIAL / FULL_OPENCV. 입력 model 이 PINHOLE 류일 때 부족한 distortion 항은 0 으로 채움 (downstream 어댑터가 OPENCV 8-param 을 요구).
+
+### 2.2 모델별 변환 규칙
+
+| COLMAP 입력 model | 추출 규칙 |
+|---|---|
+| OPENCV (4) | fx, fy, cx, cy, k1, k2, p1, p2 그대로 |
+| PINHOLE (1) | fx, fy, cx, cy; k=p=0 |
+| SIMPLE_PINHOLE (0) | f → fx=fy; k=p=0 |
+| SIMPLE_RADIAL (2) | f → fx=fy; k1=k, k2=p1=p2=0 |
+| RADIAL (3) | f → fx=fy; k1,k2 보존; p=0 |
+| FULL_OPENCV (6) | 처음 8-param 추출; k3..k6 drop (warning) |
+| OPENCV_FISHEYE 등 | 미지원 — ValueError |
+
+### 2.3 호출 예시
+
+```bash
+# P1 stage 1 (COLMAP) 종료 후 사이트 공유 intrinsics 추출
+docker run --rm \
+    -v "$DATA_ROOT":/data \
+    -v "$(pwd)/experiments/adapters":/adapters \
+    ars/m1_colmap:latest \
+    python /adapters/colmap_to_intrinsics.py \
+        --cameras /data/outputs/P1/I-1/run-01/pose/sparse/0/cameras.bin \
+        --output  /data/sites/I-1/calib/intrinsics.json
+
+# 이후 P9 호출 시 동일 JSON 이 자동 참조 (mast3r_slam_to_colmap.py 입력)
+```
+
+`run_pipeline_p1.sh` 의 Stage 3 후속 wrapper 로 호출하면 P9 진입 직전 intrinsics 자동 준비.
+
+### 2.4 호스팅
+
+`numpy` 만 필요 → 별도 image 불필요. `ars/m1_colmap` 컨테이너 또는 host python 어느 쪽이든 가능.
+
+### 2.5 Known limitations
+
+| 한계 | 영향 | 대응 |
+|---|---|---|
+| Single-camera 가정 (첫 entry 만) | 다중 camera site 미지원 | run_pipeline_p1.sh 의 `--ImageReader.single_camera 1` default ON |
+| Fisheye 미지원 | 어안렌즈 site 에서 사용 불가 | OPENCV_FISHEYE 분기는 future work |
+| Self-calib 한계 | 극단 distortion site 에서 부정확 | 별도 calibration session (Tier 3) |
+
+---
+
+## 3. Future Adapters (Tier 3 예정)
 
 | 후보 | 목적 |
 |---|---|
@@ -96,10 +152,11 @@ docker run --rm \
 
 ---
 
-## 3. Cross-reference
+## 4. Cross-reference
 
-- Pipeline 호출 wrapper: [`scripts/run_pipeline_p9.sh`](../scripts/run_pipeline_p9.sh)
+- Pipeline 호출 wrapper: [`scripts/run_pipeline_p1.sh`](../scripts/run_pipeline_p1.sh) · [`scripts/run_pipeline_p9.sh`](../scripts/run_pipeline_p9.sh)
 - 입력 데이터 layout: [`data/README.md`](../data/README.md)
 - 가설 매핑: [PAPER_OUTLINE.md §3.3 Table 1b](../../PAPER_OUTLINE.md)
+- M1 method README: [`docker/m1_colmap/README.md`](../docker/m1_colmap/README.md)
 - M7 method README: [`docker/m7_mast3r_slam/README.md`](../docker/m7_mast3r_slam/README.md)
 - M9 method README: [`docker/m9_2dgs/README.md`](../docker/m9_2dgs/README.md)
