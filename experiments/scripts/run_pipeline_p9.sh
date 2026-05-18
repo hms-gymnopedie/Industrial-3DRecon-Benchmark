@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
 # run_pipeline_p9.sh — P9 (H-Best) end-to-end pipeline
-#   Stage 1: M7 MASt3R-SLAM (deep-prior visual SLAM, pose+native pointmap)
-#   Stage 2: Adapter (MASt3R-SLAM native → COLMAP text format)
-#   Stage 3: M9 2DGS (planar-prior representation, surfel + native mesh)
+#   Stage 1:   M7 MASt3R-SLAM (deep-prior visual SLAM, pose+native pointmap)
+#   Stage 2:   Adapter (MASt3R-SLAM native → COLMAP text format, OPENCV)
+#   Stage 2.5: COLMAP image_undistorter (OPENCV → PINHOLE + undistorted images)
+#   Stage 3:   M9 2DGS train on undistorted PINHOLE + native TSDF mesh
+#
+# NOTE: 2DGS dataset_readers.py 는 OPENCV camera model 거부 (3DGS fork 의 limit).
+# Stage 2.5 의 undistortion 이 필수 (m1_colmap 컨테이너 재활용).
 #
 # Pre-registered hypothesis: H-Best — learned pose backbone + planar primitives
 # 산업현장 textureless / reflective / dynamic / 저조도 도메인에서 최상위 성능 예상.
@@ -11,7 +15,8 @@
 # Usage:
 #   run_pipeline_p9.sh [--site I-1] [--run run-01] [--gpu-pose 0] [--gpu-rep 1] \
 #                     [--data-root ./data] [--weights ./weights] \
-#                     [--iterations 30000] [--skip-pose|--skip-adapt|--skip-rep]
+#                     [--iterations 30000] \
+#                     [--skip-pose|--skip-adapt|--skip-undistort|--skip-rep]
 # =============================================================================
 set -euo pipefail
 
@@ -28,8 +33,10 @@ WEIGHTS_DIR="${REPO_ROOT}/experiments/weights"
 ITERATIONS=30000
 SKIP_POSE=0
 SKIP_ADAPT=0
+SKIP_UNDISTORT=0
 SKIP_REP=0
 PIPELINE_ID="P9"
+M1_IMAGE="ars/m1_colmap:3.9.1"
 M7_IMAGE="ars/m7_mast3r_slam:latest"
 M9_IMAGE="ars/m9_2dgs:latest"
 MAST3R_CKPT="MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth"
@@ -46,9 +53,10 @@ while [ $# -gt 0 ]; do
         --data-root)   DATA_ROOT="$2"; shift 2 ;;
         --weights)     WEIGHTS_DIR="$2"; shift 2 ;;
         --iterations)  ITERATIONS="$2"; shift 2 ;;
-        --skip-pose)   SKIP_POSE=1; shift ;;
-        --skip-adapt)  SKIP_ADAPT=1; shift ;;
-        --skip-rep)    SKIP_REP=1; shift ;;
+        --skip-pose)      SKIP_POSE=1; shift ;;
+        --skip-adapt)     SKIP_ADAPT=1; shift ;;
+        --skip-undistort) SKIP_UNDISTORT=1; shift ;;
+        --skip-rep)       SKIP_REP=1; shift ;;
         -h|--help)     sed -n '2,17p' "$0"; exit 0 ;;
         *) echo "Unknown arg: $1"; exit 2 ;;
     esac
@@ -63,11 +71,12 @@ INTRINSICS_FILE="${SITE_DIR}/calib/intrinsics.json"
 OUT_DIR="${DATA_ROOT}/outputs/${PIPELINE_ID}/${SITE}/${RUN}"
 POSE_NATIVE_DIR="${OUT_DIR}/pose_native"
 POSE_DIR="${OUT_DIR}/pose"
+UNDISTORT_DIR="${OUT_DIR}/pose_undistorted"
 RECON_DIR="${OUT_DIR}/recon"
 LOG_DIR="${OUT_DIR}/logs"
 METRICS_FILE="${OUT_DIR}/metrics.json"
 
-mkdir -p "${POSE_NATIVE_DIR}" "${POSE_DIR}/sparse/0" "${RECON_DIR}" "${LOG_DIR}"
+mkdir -p "${POSE_NATIVE_DIR}" "${POSE_DIR}/sparse/0" "${UNDISTORT_DIR}" "${RECON_DIR}" "${LOG_DIR}"
 
 # ---------------------------------------------------------------
 # Pre-flight
@@ -173,7 +182,49 @@ if [ ! -f "${POSE_DIR}/sparse/0/cameras.txt" ] || [ ! -f "${POSE_DIR}/sparse/0/i
 fi
 
 # ---------------------------------------------------------------
-# Stage 3: M9 2DGS — planar-prior representation
+# Stage 2.5: COLMAP image_undistorter — OPENCV → PINHOLE
+#   2DGS dataset_readers.py 가 OPENCV camera model 거부 (3DGS fork limit).
+#   m1_colmap 컨테이너 재활용 (M7 컨테이너에 colmap binary 없음).
+#   Idempotent: pose_undistorted/sparse/cameras.{bin,txt} 가 이미 있으면 skip.
+# ---------------------------------------------------------------
+T_UNDISTORT_START=$(date +%s)
+UNDISTORT_DONE=0
+if [ -f "${UNDISTORT_DIR}/sparse/cameras.bin" ] || [ -f "${UNDISTORT_DIR}/sparse/cameras.txt" ]; then
+    echo
+    echo "[skip] Stage 2.5 (image_undistorter) — undistorted output 이미 존재"
+    UNDISTORT_DONE=1
+fi
+if [ "${SKIP_UNDISTORT}" -eq 0 ] && [ "${UNDISTORT_DONE}" -eq 0 ]; then
+    echo
+    echo "----------------------------------------------------------------"
+    echo "  Stage 2.5: COLMAP image_undistorter (OPENCV → PINHOLE)"
+    echo "----------------------------------------------------------------"
+    docker run --rm \
+        --gpus "\"device=${GPU_POSE}\"" \
+        -v "${DATA_ROOT}:/data" \
+        --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-undistort" \
+        "${M1_IMAGE}" \
+        colmap image_undistorter \
+            --image_path  "/data/sites/${SITE}/runs/${RUN}/frames" \
+            --input_path  "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose/sparse/0" \
+            --output_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose_undistorted" \
+            --output_type COLMAP \
+            2>&1 | tee "${LOG_DIR}/colmap_undistort.log"
+elif [ "${SKIP_UNDISTORT}" -eq 1 ]; then
+    echo "[skip] Stage 2.5 (image_undistorter) — --skip-undistort"
+fi
+T_UNDISTORT_END=$(date +%s)
+T_UNDISTORT=$(( T_UNDISTORT_END - T_UNDISTORT_START ))
+
+# Sanity check undistorted output (2DGS 진입 전 필수 검증)
+if [ ! -f "${UNDISTORT_DIR}/sparse/cameras.bin" ] && [ ! -f "${UNDISTORT_DIR}/sparse/cameras.txt" ]; then
+    echo "[FATAL] image_undistorter 출력 누락: ${UNDISTORT_DIR}/sparse/cameras.{bin,txt}"
+    echo "        Stage 2.5 실패 — log 확인: ${LOG_DIR}/colmap_undistort.log"
+    exit 4
+fi
+
+# ---------------------------------------------------------------
+# Stage 3: M9 2DGS — planar-prior representation (on undistorted PINHOLE)
 # ---------------------------------------------------------------
 T_REP_START=$(date +%s)
 if [ "${SKIP_REP}" -eq 0 ]; then
@@ -187,8 +238,7 @@ if [ "${SKIP_REP}" -eq 0 ]; then
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m9" \
         "${M9_IMAGE}" \
         python /opt/two_dgs/train.py \
-            --source_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose" \
-            --images "/data/sites/${SITE}/runs/${RUN}/frames" \
+            --source_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose_undistorted" \
             --model_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/recon" \
             --iterations "${ITERATIONS}" \
             --resolution 1 \
@@ -221,6 +271,8 @@ echo
 echo "----------------------------------------------------------------"
 echo "  Metrics aggregation"
 echo "----------------------------------------------------------------"
+# adapter time 에 image_undistorter (Stage 2.5) 도 합산 (별도 compute_metrics flag 없음)
+T_ADAPT_TOTAL=$(( T_ADAPT + T_UNDISTORT ))
 python3 "$(dirname "${BASH_SOURCE[0]}")/compute_metrics.py" \
     --pipeline "${PIPELINE_ID}" \
     --site "${SITE}" \
@@ -228,7 +280,7 @@ python3 "$(dirname "${BASH_SOURCE[0]}")/compute_metrics.py" \
     --recon-dir "${RECON_DIR}" \
     --t-pose "${T_POSE}" \
     --t-rep "${T_REP}" \
-    --t-adapter "${T_ADAPT}" \
+    --t-adapter "${T_ADAPT_TOTAL}" \
     --output "${METRICS_FILE}"
 
 # ---------------------------------------------------------------
@@ -237,9 +289,10 @@ python3 "$(dirname "${BASH_SOURCE[0]}")/compute_metrics.py" \
 echo
 echo "================================================================"
 echo "  ${PIPELINE_ID} 완료 — site=${SITE} run=${RUN}"
-echo "    pose time:      ${T_POSE}s"
-echo "    adapter time:   ${T_ADAPT}s"
-echo "    rep time:       ${T_REP}s"
-echo "    output:         ${OUT_DIR}"
-echo "    metrics:        ${METRICS_FILE}"
+echo "    pose      (Stage 1):    ${T_POSE}s"
+echo "    adapter   (Stage 2):    ${T_ADAPT}s"
+echo "    undistort (Stage 2.5):  ${T_UNDISTORT}s"
+echo "    rep       (Stage 3):    ${T_REP}s"
+echo "    output:                 ${OUT_DIR}"
+echo "    metrics:                ${METRICS_FILE}"
 echo "================================================================"

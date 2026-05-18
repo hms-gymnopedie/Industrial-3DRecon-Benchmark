@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 # =============================================================================
 # run_pipeline_p1.sh — P1 (H-Worst) end-to-end pipeline
-#   Stage 1: M1 COLMAP (SfM pose)
-#   Stage 2: M8 3DGS (volumetric representation)
+#   Stage 1:   M1 COLMAP (SfM pose, OPENCV camera model)
+#   Stage 1.5: COLMAP image_undistorter (OPENCV → PINHOLE + undistorted images)
+#   Stage 2:   M8 3DGS train on undistorted PINHOLE images
+#
+# NOTE: 3DGS/2DGS dataset_readers.py 는 OPENCV camera model 거부 (PINHOLE /
+# SIMPLE_PINHOLE 만 지원). 따라서 Stage 1.5 의 undistortion 이 필수.
 #
 # Pre-registered hypothesis: H-Worst — hand-crafted SfM + volumetric primitives
 # 산업현장 textureless / reflective / dynamic 도메인에서 최하위 성능 예상.
 #
 # Usage:
 #   run_pipeline_p1.sh [--site I-1] [--run run-01] [--gpu-pose 0] [--gpu-rep 1] \
-#                     [--data-root ./data] [--iterations 30000] [--skip-pose|--skip-rep]
+#                     [--data-root ./data] [--iterations 30000] \
+#                     [--skip-pose|--skip-undistort|--skip-rep]
 # =============================================================================
 set -euo pipefail
 
@@ -23,6 +28,7 @@ GPU_REP=1
 DATA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/data"
 ITERATIONS=30000
 SKIP_POSE=0
+SKIP_UNDISTORT=0
 SKIP_REP=0
 PIPELINE_ID="P1"
 M1_IMAGE="ars/m1_colmap:3.9.1"
@@ -39,8 +45,9 @@ while [ $# -gt 0 ]; do
         --gpu-rep)     GPU_REP="$2"; shift 2 ;;
         --data-root)   DATA_ROOT="$2"; shift 2 ;;
         --iterations)  ITERATIONS="$2"; shift 2 ;;
-        --skip-pose)   SKIP_POSE=1; shift ;;
-        --skip-rep)    SKIP_REP=1; shift ;;
+        --skip-pose)      SKIP_POSE=1; shift ;;
+        --skip-undistort) SKIP_UNDISTORT=1; shift ;;
+        --skip-rep)       SKIP_REP=1; shift ;;
         -h|--help)     sed -n '2,15p' "$0"; exit 0 ;;
         *) echo "Unknown arg: $1"; exit 2 ;;
     esac
@@ -53,11 +60,12 @@ SITE_DIR="${DATA_ROOT}/sites/${SITE}"
 FRAMES_DIR="${SITE_DIR}/runs/${RUN}/frames"
 OUT_DIR="${DATA_ROOT}/outputs/${PIPELINE_ID}/${SITE}/${RUN}"
 POSE_DIR="${OUT_DIR}/pose"
+UNDISTORT_DIR="${OUT_DIR}/pose_undistorted"
 RECON_DIR="${OUT_DIR}/recon"
 LOG_DIR="${OUT_DIR}/logs"
 METRICS_FILE="${OUT_DIR}/metrics.json"
 
-mkdir -p "${POSE_DIR}" "${RECON_DIR}" "${LOG_DIR}"
+mkdir -p "${POSE_DIR}" "${UNDISTORT_DIR}" "${RECON_DIR}" "${LOG_DIR}"
 
 # ---------------------------------------------------------------
 # Pre-flight
@@ -102,7 +110,7 @@ if [ "${SKIP_POSE}" -eq 0 ]; then
         colmap automatic_reconstructor \
             --image_path "/data/sites/${SITE}/runs/${RUN}/frames" \
             --workspace_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose" \
-            --camera_model OPENCV \
+            --camera_model PINHOLE \
             --single_camera 1 \
             --sparse 1 \
             --dense 0 \
@@ -125,7 +133,52 @@ if [ ! -f "${SPARSE_DIR}/cameras.bin" ] && [ ! -f "${SPARSE_DIR}/cameras.txt" ];
 fi
 
 # ---------------------------------------------------------------
-# Stage 2: M8 3DGS — volumetric representation
+# Stage 1.5: COLMAP image_undistorter — OPENCV → PINHOLE
+#   3DGS dataset_readers.py 가 OPENCV camera model 거부하므로
+#   undistorted images + PINHOLE camera model 로 변환 필수.
+#   산출물: pose_undistorted/{images/, sparse/}
+#   - images/*.png 는 distortion 제거된 새 PNG (frame 수 동일)
+#   - sparse/ 는 PINHOLE camera model + 동일 pose
+#   Idempotent: pose_undistorted/sparse/cameras.{bin,txt} 가 이미 있으면 skip.
+# ---------------------------------------------------------------
+T_UNDISTORT_START=$(date +%s)
+UNDISTORT_DONE=0
+if [ -f "${UNDISTORT_DIR}/sparse/cameras.bin" ] || [ -f "${UNDISTORT_DIR}/sparse/cameras.txt" ]; then
+    echo
+    echo "[skip] Stage 1.5 (image_undistorter) — undistorted output 이미 존재"
+    UNDISTORT_DONE=1
+fi
+if [ "${SKIP_UNDISTORT}" -eq 0 ] && [ "${UNDISTORT_DONE}" -eq 0 ]; then
+    echo
+    echo "----------------------------------------------------------------"
+    echo "  Stage 1.5: COLMAP image_undistorter (OPENCV → PINHOLE)"
+    echo "----------------------------------------------------------------"
+    docker run --rm \
+        --gpus "\"device=${GPU_POSE}\"" \
+        -v "${DATA_ROOT}:/data" \
+        --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-undistort" \
+        "${M1_IMAGE}" \
+        colmap image_undistorter \
+            --image_path  "/data/sites/${SITE}/runs/${RUN}/frames" \
+            --input_path  "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose/sparse/0" \
+            --output_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose_undistorted" \
+            --output_type COLMAP \
+            2>&1 | tee "${LOG_DIR}/m1_undistort.log"
+elif [ "${SKIP_UNDISTORT}" -eq 1 ]; then
+    echo "[skip] Stage 1.5 (image_undistorter) — --skip-undistort"
+fi
+T_UNDISTORT_END=$(date +%s)
+T_UNDISTORT=$(( T_UNDISTORT_END - T_UNDISTORT_START ))
+
+# Sanity check undistorted output (3DGS 진입 전 필수 검증)
+if [ ! -f "${UNDISTORT_DIR}/sparse/cameras.bin" ] && [ ! -f "${UNDISTORT_DIR}/sparse/cameras.txt" ]; then
+    echo "[FATAL] image_undistorter 출력 누락: ${UNDISTORT_DIR}/sparse/cameras.{bin,txt}"
+    echo "        Stage 1.5 실패 — log 확인: ${LOG_DIR}/m1_undistort.log"
+    exit 2
+fi
+
+# ---------------------------------------------------------------
+# Stage 2: M8 3DGS — volumetric representation (on undistorted PINHOLE)
 # ---------------------------------------------------------------
 T_REP_START=$(date +%s)
 if [ "${SKIP_REP}" -eq 0 ]; then
@@ -139,8 +192,7 @@ if [ "${SKIP_REP}" -eq 0 ]; then
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m8" \
         "${M8_IMAGE}" \
         python /opt/gaussian_splatting/train.py \
-            --source_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose" \
-            --images "/data/sites/${SITE}/runs/${RUN}/frames" \
+            --source_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose_undistorted" \
             --model_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/recon" \
             --iterations "${ITERATIONS}" \
             --resolution 1 \
@@ -159,12 +211,14 @@ echo
 echo "----------------------------------------------------------------"
 echo "  Metrics aggregation"
 echo "----------------------------------------------------------------"
+# pose time 에 image_undistorter (Stage 1.5) 도 합산 (compute_metrics 의 t-pose 인자 spec)
+T_POSE_TOTAL=$(( T_POSE + T_UNDISTORT ))
 python3 "$(dirname "${BASH_SOURCE[0]}")/compute_metrics.py" \
     --pipeline "${PIPELINE_ID}" \
     --site "${SITE}" \
     --run "${RUN}" \
     --recon-dir "${RECON_DIR}" \
-    --t-pose "${T_POSE}" \
+    --t-pose "${T_POSE_TOTAL}" \
     --t-rep "${T_REP}" \
     --output "${METRICS_FILE}"
 
@@ -174,8 +228,9 @@ python3 "$(dirname "${BASH_SOURCE[0]}")/compute_metrics.py" \
 echo
 echo "================================================================"
 echo "  ${PIPELINE_ID} 완료 — site=${SITE} run=${RUN}"
-echo "    pose time:  ${T_POSE}s"
-echo "    rep  time:  ${T_REP}s"
-echo "    output:     ${OUT_DIR}"
-echo "    metrics:    ${METRICS_FILE}"
+echo "    pose  time (Stage 1):    ${T_POSE}s"
+echo "    undistort (Stage 1.5):   ${T_UNDISTORT}s"
+echo "    rep   time (Stage 2):    ${T_REP}s"
+echo "    output:                  ${OUT_DIR}"
+echo "    metrics:                 ${METRICS_FILE}"
 echo "================================================================"

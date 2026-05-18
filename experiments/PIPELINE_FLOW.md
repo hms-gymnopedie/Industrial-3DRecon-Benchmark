@@ -42,7 +42,9 @@ P1 ↔ P9 의 metric 차이 (Δ) 가 산업현장에서 더 크고, library cont
 
 ## 2. P1 (H-Worst) end-to-end flow — `run_pipeline_p1.sh`
 
-총 3 stage. 사전등록 가설 H-Worst 검증의 primary 입력. Wall-time per site 약 60–105 분 (4090 1 GPU 기준).
+총 **4 stage** (Stage 1 / 1.5 / 2 / metrics). 사전등록 가설 H-Worst 검증의 primary 입력. Wall-time per site 약 65–110 분 (4090 1 GPU 기준).
+
+> **Stage 1.5 (image_undistorter) 의 존재 이유:** 3DGS upstream `dataset_readers.py` 가 OPENCV camera model 거부 (PINHOLE / SIMPLE_PINHOLE 만 지원). 따라서 COLMAP `--camera_model OPENCV` 산출물을 그대로 3DGS 에 투입할 수 없고, `colmap image_undistorter` 로 **undistorted images + PINHOLE camera model** 로 변환하는 단계가 필수.
 
 ### 2.1 Stage 0 — Pre-flight 검증
 
@@ -87,9 +89,37 @@ docker run --rm --gpus "device=${GPU_POSE}" \
 
 **Wall-time:** ~30–60 min per site (frame 1,500 기준).
 
-### 2.3 Stage 2 — M8 3DGS train (volumetric representation)
+### 2.3 Stage 1.5 — COLMAP image_undistorter (OPENCV → PINHOLE)
 
-`run_pipeline_p1.sh` line 127–151. GPU `--gpu-rep` (default 1).
+`run_pipeline_p1.sh` 의 Stage 1 후속 (idempotent — undistorted output 이미 존재 시 skip). GPU `--gpu-pose` 재활용 + `--skip-undistort` flag 옵션.
+
+**Docker call:**
+```bash
+docker run --rm --gpus "device=${GPU_POSE}" \
+    -v ${DATA_ROOT}:/data \
+    ars/m1_colmap:3.9.1 \
+    colmap image_undistorter \
+        --image_path  /data/sites/${SITE}/runs/${RUN}/frames \
+        --input_path  /data/outputs/P1/${SITE}/${RUN}/pose/sparse/0 \
+        --output_path /data/outputs/P1/${SITE}/${RUN}/pose_undistorted \
+        --output_type COLMAP
+```
+
+**산출물:**
+- `${OUT_DIR}/pose_undistorted/images/*.png` — distortion 제거 PNG (frame 수 동일)
+- `${OUT_DIR}/pose_undistorted/sparse/{cameras,images,points3D}.bin` — **PINHOLE** camera model (4-param: fx, fy, cx, cy; k=p=0)
+- `${OUT_DIR}/pose_undistorted/run-colmap-*.sh` — COLMAP helper scripts (사용 안 함)
+- `${LOG_DIR}/m1_undistort.log`
+
+**Sanity check:** `pose_undistorted/sparse/cameras.{bin,txt}` 부재 시 `[FATAL] image_undistorter 출력 누락` 으로 종료.
+
+**Wall-time:** ~3-5 min per site.
+
+> **Note (PSNR/SSIM noise floor 영향):** undistortion 으로 frame 의 ~3-7% 가장자리 pixel 이 valid mask 외부로 분류 → 3DGS train 의 effective view coverage 가 약간 감소. 단 9 configurations 모두 동일 undistortion 거치므로 fairness 보존 (§3.6 F3).
+
+### 2.4 Stage 2 — M8 3DGS train (volumetric representation)
+
+`run_pipeline_p1.sh` Stage 2. GPU `--gpu-rep` (default 1).
 
 **Docker call:**
 ```bash
@@ -97,13 +127,14 @@ docker run --rm --gpus "device=${GPU_REP}" \
     -v ${DATA_ROOT}:/data \
     ars/m8_3dgs:latest \
     python /opt/gaussian_splatting/train.py \
-        --source_path /data/outputs/P1/${SITE}/${RUN}/pose \
-        --images      /data/sites/${SITE}/runs/${RUN}/frames \
+        --source_path /data/outputs/P1/${SITE}/${RUN}/pose_undistorted \
         --model_path  /data/outputs/P1/${SITE}/${RUN}/recon \
         --iterations  30000 \
         --resolution 1 \
         --eval
 ```
+
+**중요 변경:** `--source_path` 가 `pose/` 가 아닌 **`pose_undistorted/`** (Stage 1.5 산출). 그 안의 `images/` + `sparse/` 가 PINHOLE format 으로 3DGS dataset_reader 호환.
 
 **산출물:**
 - `${OUT_DIR}/recon/point_cloud/iteration_30000/point_cloud.ply` — 학습 완료 3DGS
@@ -113,15 +144,16 @@ docker run --rm --gpus "device=${GPU_REP}" \
 
 **Wall-time:** ~30–45 min per site.
 
-### 2.4 Stage 3 — `compute_metrics.py` 집계
+### 2.5 Stage 3 (metrics) — `compute_metrics.py` 집계
 
-`run_pipeline_p1.sh` line 155–169. Host 측 Python 실행.
+`run_pipeline_p1.sh` 의 metrics aggregation. Host 측 Python 실행. T_UNDISTORT 는 T_POSE 에 합산.
 
 ```bash
+T_POSE_TOTAL=$(( T_POSE + T_UNDISTORT ))
 python3 compute_metrics.py \
     --pipeline P1 --site ${SITE} --run ${RUN} \
     --recon-dir ${OUT_DIR}/recon \
-    --t-pose ${T_POSE} --t-rep ${T_REP} \
+    --t-pose ${T_POSE_TOTAL} --t-rep ${T_REP} \
     --output ${OUT_DIR}/metrics.json
 ```
 
@@ -142,28 +174,34 @@ python3 compute_metrics.py \
 
 본 metrics.json 은 [PAPER §4.3 Tab. 2](../PAPER_DRAFT.md) 의 P1 column 의 *TBD 수치 fill* 의 직접 입력.
 
-### 2.5 P1 전체 flow 요약
+### 2.6 P1 전체 flow 요약
 
 ```
 [frames/*.png]
      │
      ▼
-┌─────────────────────────────────────┐
-│  Stage 1: M1 COLMAP (GPU 0)        │
-│  automatic_reconstructor + OPENCV  │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│  Stage 1: M1 COLMAP (GPU 0)             │
+│  automatic_reconstructor + OPENCV       │
+└──────────────────────────────────────────┘
      │
-     ▼  pose/sparse/0/{cameras,images,points3D}.bin
-┌─────────────────────────────────────┐
-│  Stage 2: M8 3DGS (GPU 1)          │
-│  train.py --iterations 30000       │
-└─────────────────────────────────────┘
+     ▼  pose/sparse/0/{cameras,images,points3D}.bin  (OPENCV)
+┌──────────────────────────────────────────┐
+│  Stage 1.5: COLMAP image_undistorter    │
+│  (GPU 0) — OPENCV → PINHOLE             │
+└──────────────────────────────────────────┘
+     │
+     ▼  pose_undistorted/{images/*.png, sparse/}  (PINHOLE)
+┌──────────────────────────────────────────┐
+│  Stage 2: M8 3DGS (GPU 1)               │
+│  train.py --iterations 30000            │
+└──────────────────────────────────────────┘
      │
      ▼  recon/point_cloud/iteration_30000/point_cloud.ply
-┌─────────────────────────────────────┐
-│  Stage 3: compute_metrics.py (host) │
-│  PSNR/SSIM/LPIPS + wall-time        │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│  Stage 3 (metrics): compute_metrics.py  │
+│  PSNR/SSIM/LPIPS + wall-time            │
+└──────────────────────────────────────────┘
      │
      ▼
 [metrics.json]
@@ -173,7 +211,9 @@ python3 compute_metrics.py \
 
 ## 3. P9 (H-Best) end-to-end flow — `run_pipeline_p9.sh`
 
-총 4 stage. 사전등록 가설 H-Best 검증의 primary 입력. Wall-time per site 약 40–95 분 (4090 1 GPU 기준; SLAM 빠름).
+총 **5 stage** (Stage 1 / 2 / 2.5 / 3 / metrics). 사전등록 가설 H-Best 검증의 primary 입력. Wall-time per site 약 45–100 분 (4090 1 GPU 기준; SLAM 빠름).
+
+> **Stage 2.5 (image_undistorter) 추가 이유:** 2DGS upstream 도 3DGS fork 이므로 동일한 OPENCV 거부 issue. `mast3r_slam_to_colmap.py` adapter 가 OPENCV text 형식으로 산출 → image_undistorter 로 PINHOLE undistorted images 변환 후 2DGS 진입. m1_colmap 컨테이너 재활용 (m7 컨테이너에 colmap binary 없음).
 
 ### 3.1 Stage 0 — Pre-flight 검증
 
@@ -246,9 +286,29 @@ docker run --rm \
 
 **Wall-time:** <1 min.
 
-### 3.4 Stage 3 — M9 2DGS train (planar-prior representation) + native mesh
+### 3.4 Stage 2.5 — COLMAP image_undistorter (OPENCV → PINHOLE)
 
-`run_pipeline_p9.sh` line 175–215. GPU `--gpu-rep` (default 1). 두 docker call (train + mesh extract).
+P1 §2.3 와 동일 패턴. m1_colmap 컨테이너 재활용. Idempotent (output 이미 존재 시 skip).
+
+**Docker call:**
+```bash
+docker run --rm --gpus "device=${GPU_POSE}" \
+    -v ${DATA_ROOT}:/data \
+    ars/m1_colmap:3.9.1 \
+    colmap image_undistorter \
+        --image_path  /data/sites/${SITE}/runs/${RUN}/frames \
+        --input_path  /data/outputs/P9/${SITE}/${RUN}/pose/sparse/0 \
+        --output_path /data/outputs/P9/${SITE}/${RUN}/pose_undistorted \
+        --output_type COLMAP
+```
+
+**산출물:** `pose_undistorted/{images/, sparse/}` (PINHOLE) + `${LOG_DIR}/colmap_undistort.log`.
+
+**Wall-time:** ~3-5 min.
+
+### 3.5 Stage 3 — M9 2DGS train (planar-prior representation) + native mesh
+
+`run_pipeline_p9.sh` Stage 3. GPU `--gpu-rep` (default 1). 두 docker call (train + mesh extract).
 
 **Docker call (train):**
 ```bash
@@ -256,11 +316,12 @@ docker run --rm --gpus "device=${GPU_REP}" \
     -v ${DATA_ROOT}:/data \
     ars/m9_2dgs:latest \
     python /opt/two_dgs/train.py \
-        --source_path /data/outputs/P9/${SITE}/${RUN}/pose \
-        --images      /data/sites/${SITE}/runs/${RUN}/frames \
+        --source_path /data/outputs/P9/${SITE}/${RUN}/pose_undistorted \
         --model_path  /data/outputs/P9/${SITE}/${RUN}/recon \
         --iterations  30000 --resolution 1 --eval
 ```
+
+**중요 변경:** `--source_path` 가 `pose/` → **`pose_undistorted/`**.
 
 **Docker call (native TSDF mesh extraction):**
 ```bash
@@ -283,21 +344,22 @@ docker run --rm --gpus "device=${GPU_REP}" \
 
 **Wall-time:** ~30–60 min train + ~5 min mesh extract.
 
-### 3.5 Stage 4 — `compute_metrics.py` 집계
+### 3.6 Stage 4 (metrics) — `compute_metrics.py` 집계
 
-P1 과 동일 구조 + `--t-adapter` 추가 인자:
+P1 과 동일 구조 + `--t-adapter` 인자에 T_UNDISTORT 합산:
 
 ```bash
+T_ADAPT_TOTAL=$(( T_ADAPT + T_UNDISTORT ))
 python3 compute_metrics.py \
     --pipeline P9 --site ${SITE} --run ${RUN} \
     --recon-dir ${OUT_DIR}/recon \
-    --t-pose ${T_POSE} --t-adapter ${T_ADAPT} --t-rep ${T_REP} \
+    --t-pose ${T_POSE} --t-adapter ${T_ADAPT_TOTAL} --t-rep ${T_REP} \
     --output ${OUT_DIR}/metrics.json
 ```
 
-산출물 `metrics.json` 구조에 추가 필드 `wall_time_adapter_sec` 포함.
+`wall_time_adapter_sec` 에 adapter + undistort 양쪽 wall-time 합산.
 
-### 3.6 P9 전체 flow 요약
+### 3.7 P9 전체 flow 요약
 
 ```
 [frames/*.png] + [intrinsics.json] + [MASt3R checkpoint]
@@ -315,7 +377,13 @@ python3 compute_metrics.py \
 │  TUM → COLMAP text + pose reversal      │
 └──────────────────────────────────────────┘
      │
-     ▼  pose/sparse/0/{cameras,images,points3D}.txt
+     ▼  pose/sparse/0/{cameras,images,points3D}.txt  (OPENCV)
+┌──────────────────────────────────────────┐
+│  Stage 2.5: COLMAP image_undistorter    │
+│  (GPU 0, m1_colmap) — OPENCV → PINHOLE  │
+└──────────────────────────────────────────┘
+     │
+     ▼  pose_undistorted/{images/*.png, sparse/}  (PINHOLE)
 ┌──────────────────────────────────────────┐
 │  Stage 3: M9 2DGS train (GPU 1)         │
 │  train.py --iterations 30000            │
@@ -324,8 +392,8 @@ python3 compute_metrics.py \
      │
      ▼  recon/point_cloud + recon/train/ours_30000/fuse_post.ply
 ┌──────────────────────────────────────────┐
-│  Stage 4: compute_metrics.py (host)     │
-│  PSNR/SSIM/LPIPS + wall-time (4 stages) │
+│  Stage 4 (metrics): compute_metrics.py  │
+│  PSNR/SSIM/LPIPS + wall-time (5 stages) │
 └──────────────────────────────────────────┘
      │
      ▼

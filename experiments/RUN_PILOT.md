@@ -460,7 +460,33 @@ done
 
 또는 reorganize_frames.sh 를 `--mode hardlink` 로 재실행 (동일 결과).
 
-### 11.2 `pull access denied for ars/...` — image 미존재
+### 11.2 `Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!`
+
+증상: P1 Stage 2 (M8 3DGS) 또는 P9 Stage 3 (M9 2DGS) 의 `dataset_readers.py` 에서 `AssertionError: Colmap camera model not handled` 발생.
+
+원인: COLMAP `--camera_model OPENCV` (또는 adapter 의 OPENCV text 산출) 가 3DGS/2DGS 의 `readColmapCameras` 가 거부하는 model — 3DGS upstream 이 PINHOLE / SIMPLE_PINHOLE 만 지원.
+
+해결 — 영구 fix 완료 (`git pull` 후 재실행):
+- `run_pipeline_p1.sh` 에 **Stage 1.5 (image_undistorter)** 추가 — Stage 1 (COLMAP) 후 OPENCV → PINHOLE + undistorted images 변환
+- `run_pipeline_p9.sh` 에 **Stage 2.5 (image_undistorter)** 추가 — Stage 2 (adapter) 후 동일 변환
+- 3DGS / 2DGS 의 `--source_path` 가 `pose_undistorted/` 로 자동 변경
+
+이미 Stage 1 (COLMAP) 또는 Stage 2 (adapter) 가 끝난 상태에서 재실행 시 — skip-flag 로 이전 stage 건너뜀:
+```bash
+# P1 — Stage 1 종료, Stage 1.5 부터 진행
+bash run_pipeline_p1.sh --site I-1 --run run-01 \
+    --data-root /data/minsuh/experiment/data --skip-pose
+
+# P9 — Stage 1·2 종료, Stage 2.5 부터 진행
+bash run_pipeline_p9.sh --site I-1 --run run-01 \
+    --data-root /data/minsuh/experiment/data \
+    --weights /data/minsuh/experiment/weights \
+    --skip-pose --skip-adapt
+```
+
+Stage 1.5 / 2.5 는 idempotent — `pose_undistorted/sparse/cameras.{bin,txt}` 이미 존재 시 자동 skip.
+
+### 11.3 `pull access denied for ars/...` — image 미존재
 
 새 서버에서 `verify_dockers.sh --skip-build` 실행 시 image pull 실패. 원인 — image 가 local-only (registry 미등록), `--skip-build` 로 build 도 안 함.
 
@@ -468,7 +494,7 @@ done
 - **옵션 A:** build 새로 실행 — `bash verify_dockers.sh` (--skip-build 제거, ~50–75 min)
 - **옵션 B:** 기존 서버에서 export → 새 서버 import (§10.1)
 
-### 11.3 Diagnostic 1-shot — frames 디렉토리 상태 점검
+### 11.4 Diagnostic 1-shot — frames 디렉토리 상태 점검
 
 `run_pipeline_p1.sh` fail 시 가장 먼저 실행:
 ```bash
