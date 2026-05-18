@@ -52,9 +52,11 @@ sites/I-1/
 
 **`frames/` vs `masks/` 관계:**
 - `frames/` 가 *primary input*. P1 / P9 모두 이 폴더의 PNG 를 학습 입력으로 사용.
-- `masks/` 는 PAPER §3.2 (d) 의 dynamic instance mask 산출물 (SAM2/YOLO 계). 사용자 video-to-image preprocessing 모듈이 frame 추출과 동시에 1:1 매칭되는 mask 를 생성한 경우 본 폴더에 배치.
-- `masks/` 가 존재하면 §4.5e cluster B.1 ablation 의 `--mask on/off` 두 condition 양쪽 모두 즉시 실행 가능. 없으면 SAM2/YOLO 를 docker 내부에서 호출하는 fallback path 가 필요.
-- 파일명 매칭: `frames/0001.png` ↔ `masks/0001.png` (확장자 포함 동일 파일명; binary mask 도 PNG 로 저장).
+- `masks/` 는 PAPER §3.2 (d) 의 binary exclusion mask 산출물 (SAM 2.1 / SAM 3 계). 사용자 video-to-image preprocessing 모듈이 frame 추출과 동시에 생성한 mask 를 본 폴더에 배치.
+- **두 폴더는 *독립 collection* — 부분집합 / 카운트 관계 강제 없음.** 두 종류 비대칭이 정상 상태로 발생: (i) `skip_empty` 정책 — dynamic instance 검출 0건 frame 의 mask 미생성 → `len(masks) < len(frames)` 가능. (ii) `manual sharp reclassification` — 사용자가 sharp 의 불필요 frame 을 사후 삭제한 경우 그에 대응하는 mask 가 *orphan* 으로 남을 수 있음 → `masks` 에 `frames` 에 없는 파일명 존재 가능.
+- §4.5e cluster B.1 ablation 은 두 폴더의 *intersection* (sharp ∩ mask, 파일명 동일) 만 evidence 집합으로 사용 — 부분집합 가정 깨져도 자동 정합 (orphan mask 는 학습 입력 부재로 자동 제외).
+- `masks/` intersection 이 0개라면 ablation 자체가 trivial (mask on ≡ mask off) — 해당 site 는 §4.5e 결과 row 에서 N/A 처리.
+- 파일명 매칭 규약: mask 파일이 sharp 파일과 *짝* 을 이룰 때만 정확히 `frames/000001.png` ↔ `masks/000001.png` (확장자 포함 동일 파일명; binary mask 도 PNG 로 저장).
 
 **`frames/` 생성 경로 — 사용자 video-to-image 모듈 (사전 통합):**
 
@@ -124,7 +126,7 @@ notes: |
 - **압축:** PNG lossless (JPEG 사용 금지 — repeatable artifact 방지 + novel-view PSNR/SSIM noise floor 고정).
 - **해상도:** capture 원본 유지 (downscale 은 pipeline 내부 책임).
 - **Frame index = capture timestamp 순서 (오름차순).** 사용자 video-to-image 모듈의 dedup (§3.2 (c) dHash) 으로 인해 index 가 sparse 해도 (예: 0001, 0003, 0007, ...) lexicographic sort 가 temporal order 와 일치하면 OK.
-- **sharp ↔ mask 1:1 파일명 매칭 (필수):** `frames/000001.png` 의 dynamic instance mask 는 정확히 `masks/000001.png`. 확장자 포함 동일 파일명. mask 가 일부 frame 에서만 존재하는 경우 (skip_empty 정책) — 해당 frame 만 mask 미참조하고 frame 자체는 학습에 포함 (mask off 와 동등). 단 §4.5e cluster B.1 ablation 의 mask on/off condition 비교 시 mask 가 존재하는 frame 만 paired comparison 에 사용.
+- **sharp ↔ mask 짝 (pair) 매칭 — 부분집합 강제 없음:** mask 파일이 sharp 와 짝을 이룰 때만 정확히 `masks/000001.png` 파일명이 `frames/000001.png` 와 동일. 두 폴더는 *독립 collection* 이며 부분집합 / 카운트 관계는 강제하지 않는다 (PAPER §3.2 (d) — skip_empty 정책 + manual sharp reclassification 두 비대칭 정상). §4.5e cluster B.1 ablation 의 *full-set comparison* 은 intersection I = frames ∩ masks 만 evidence 로 사용 — I 밖 frame (sharp-only 또는 orphan mask) 은 mask on/off 두 condition 모두에서 자동 정합 (sharp-only 는 그대로 학습 포함, orphan mask 는 학습 입력 부재로 자동 무시).
 
 ---
 

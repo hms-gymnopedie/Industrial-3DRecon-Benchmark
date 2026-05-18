@@ -43,7 +43,7 @@ bash experiments/scripts/download_weights.sh --dest "${WEIGHTS_DIR}"
 
 ---
 
-## 3. Raw frames → ARS layout 재배치 (symlink)
+## 3. Raw frames → ARS layout 재배치 (hardlink)
 
 ### 3.1 사용자 video-to-image 모듈 기능 (사전 통합)
 
@@ -68,60 +68,63 @@ ${RAW_FRAMES}/{site}/{run}/sharp/*.png   ← 학습 입력 frame (blur 제거 + 
 ${RAW_FRAMES}/{site}/{run}/mask/*.png    ← sharp 와 1:1 매칭되는 dynamic instance mask
 ```
 
-### 3.3 Sharp JPG → PNG 정규화 (필요 시 1회)
+### 3.3 Sharp 입력 포맷 — PNG 통일 (사용자 책임 사전 처리)
 
-사용자 video-to-image 모듈이 sharp 를 JPG, mask 를 PNG 로 출력하는 경우 sharp 도 PNG 로 통일한다 (mask 는 이미 PNG 면 skip). 이유: (i) `mast3r_slam_to_colmap.py` 와 `reorganize_frames.sh` 의 PNG-only glob 호환, (ii) PSNR/SSIM noise floor 의 JPEG-artifact-induced underestimate 제거, (iii) §3.6 F3 fairness 일관성 (`data/README.md` §5 PNG lossless 정책).
+**정책:** 사용자 video-to-image 모듈의 sharp 출력이 JPG 인 경우 RAW_FRAMES 적재 *이전* 에 PNG 로 일괄 변환되어 있어야 한다. Mask 는 binary mask 이므로 PNG 만 허용 (lossless 필수).
 
+**근거:**
+- `mast3r_slam_to_colmap.py::list_frames()` 와 `reorganize_frames.sh` 가 PNG-only glob 매칭 (JPG 는 자동 skip)
+- PSNR/SSIM noise floor 의 JPEG-artifact-induced underestimate 제거 (§4.3 Tab. 2 절대값 정확성)
+- §3.6 F3 fairness 일관성 (data/README.md §5 PNG lossless 정책)
+- §4.5d cluster A.3 오염 ablation 의 JPEG block artifact 혼동 차단
+
+**Sharp / Mask 관계:** sharp 가 학습 입력의 primary set, mask 는 advisory 부가정보. 두 폴더는 *독립 collection* 으로 다루며 카운트 / 부분집합 관계는 강제하지 않는다 — (i) `skip_empty` 정책 (PAPER §3.2 (d)) 으로 mask 가 일부 frame 에만 생성될 수 있고 (`len(mask) < len(sharp)`), (ii) 사용자가 dashboard 또는 수동으로 sharp 의 불필요 frame 을 제거한 경우 그에 대응하는 mask 가 orphan 으로 남아 있을 수 있다 (`mask` 에 `sharp` 에 없는 파일명 존재 가능). 본 두 경우 모두 정상 상태이며 §4.5e ablation 은 `sharp ∩ mask` intersection 만 evidence 집합으로 사용한다 (PAPER §4.5e 정의).
+
+**RAW_FRAMES 적재 후 검증 (필수):**
 ```bash
-# Option A — ImageMagick mogrify (가장 빠름, 권장 — apt install imagemagick)
 for SITE in I-1 I-2 I-3 L-1 L-2 L-3; do
     SHARP_DIR="${RAW_FRAMES}/${SITE}/run-01/sharp"
-    [ -d "${SHARP_DIR}" ] || continue
-    cd "${SHARP_DIR}"
-    n_jpg=$(ls *.jpg 2>/dev/null | wc -l)
-    [ "${n_jpg}" -eq 0 ] && continue
-    echo "[${SITE}] ${n_jpg} JPG → PNG"
-    mogrify -format png *.jpg
-    rm -f *.jpg
+    MASK_DIR="${RAW_FRAMES}/${SITE}/run-01/mask"
+    NS=$(ls "${SHARP_DIR}"/*.png 2>/dev/null | wc -l)
+    NM=$(ls "${MASK_DIR}"/*.png  2>/dev/null | wc -l)
+    LEFT_JPG=$(ls "${SHARP_DIR}"/*.jpg 2>/dev/null | wc -l)
+    if [ "${LEFT_JPG}" -eq 0 ] && [ "${NS}" -gt 0 ]; then
+        echo "  ${SITE}: sharp=${NS} (PNG), mask=${NM} (advisory) ✓"
+    else
+        echo "  ${SITE}: sharp=${NS}, mask=${NM}, leftover_jpg=${LEFT_JPG} — sharp 측 검토 필요"
+    fi
 done
 ```
 
+두 조건만 만족하면 §3.4 진입:
+- `leftover_jpg = 0` (모든 sharp 가 PNG — `mast3r_slam_to_colmap.py::list_frames()` 의 PNG-only glob 호환)
+- `sharp ≥ 1` (frame 존재)
+
+Mask count / orphan 여부는 검증하지 않는다 — §4.5e ablation 이 intersection 만 사용하므로 mismatch 가 있어도 자동 정합.
+
+### 3.4 ARS layout 변환 (hardlink default)
+
+ARS 표준 layout 으로 hardlink 변환 (sharp → `frames/`, mask → `masks/`). **default mode 는 `hardlink`** — symlink 는 docker bind mount 시 container 내부에서 target prefix 가 안 보여 broken 됨 (실제 pilot 환경에서 검증). raw 와 dest 가 *동일 filesystem* 일 때 hardlink 가 가장 안전 (디스크 추가 0 + docker 호환).
+
+**`--src` / `--dest` 의 의미:**
+
+| Flag | 의미 | 예시 값 |
+|---|---|---|
+| `--src` | 사용자 video-to-image 모듈이 PNG 를 저장한 root (각 site/run 의 `sharp/` + `mask/` sub-folder 가 이 아래에 위치) | `/data/minsuh/raw_frames` |
+| `--dest` | ARS data root (변환 결과 `sites/{site}/runs/{run}/{frames,masks}/` 가 이 아래에 생성) | `/data/minsuh/experiment/data` |
+
+**예시 — 절대 경로로 바로 실행:**
+
 ```bash
-# Option B — Python PIL (ImageMagick 부재 시; Pillow 만 필요)
-python3 <<'EOF'
-import os, glob
-from PIL import Image
-RAW = os.environ.get("RAW_FRAMES", "/data/minsuh/raw_frames")
-for site in ["I-1","I-2","I-3","L-1","L-2","L-3"]:
-    sharp_dir = f"{RAW}/{site}/run-01/sharp"
-    if not os.path.isdir(sharp_dir): continue
-    n = 0
-    for jpg in sorted(glob.glob(f"{sharp_dir}/*.jpg")):
-        png = jpg.rsplit(".",1)[0] + ".png"
-        if not os.path.exists(png):
-            Image.open(jpg).save(png, "PNG", compress_level=1)
-            n += 1
-        os.remove(jpg)
-    print(f"  [{site}] {n} files converted")
-EOF
+bash experiments/scripts/reorganize_frames.sh \
+    --src   /data/minsuh/raw_frames \
+    --dest  /data/minsuh/experiment/data \
+    --sites "I-1 I-2 I-3 L-1 L-2 L-3" \
+    --runs  "run-01" \
+    --mode  hardlink
 ```
 
-검증:
-```bash
-for SITE in I-1 I-2 I-3 L-1 L-2 L-3; do
-    NS=$(ls "${RAW_FRAMES}/${SITE}/run-01/sharp"/*.png 2>/dev/null | wc -l)
-    NM=$(ls "${RAW_FRAMES}/${SITE}/run-01/mask"/*.png 2>/dev/null | wc -l)
-    LEFT_JPG=$(ls "${RAW_FRAMES}/${SITE}/run-01/sharp"/*.jpg 2>/dev/null | wc -l)
-    echo "  ${SITE}: sharp_png=${NS}, mask_png=${NM}, leftover_jpg=${LEFT_JPG}"
-done
-# leftover_jpg 는 모두 0 이어야 함
-```
-
-비용: ImageMagick 기준 6 site ~5-10 min, 디스크 ~2-3× 증가 (1,500 frame × 6 site × 1920×1080 기준 ~5 GB JPG → ~15 GB PNG). PIL 옵션은 ~20-30 min.
-
-### 3.4 ARS layout symlink 변환
-
-ARS 표준 layout 으로 symlink (sharp → `frames/`, mask → `masks/`):
+**또는 §1 의 환경 변수 사용:**
 
 ```bash
 bash experiments/scripts/reorganize_frames.sh \
@@ -129,12 +132,81 @@ bash experiments/scripts/reorganize_frames.sh \
     --dest  "${DATA_ROOT}" \
     --sites "I-1 I-2 I-3 L-1 L-2 L-3" \
     --runs  "run-01" \
-    --mode  symlink
+    --mode  hardlink
 
 # 결과:
-#   ${DATA_ROOT}/sites/{site}/runs/{run}/frames/*.png   (sharp 와 mapping)
-#   ${DATA_ROOT}/sites/{site}/runs/{run}/masks/*.png    (mask 와 mapping)
+#   ${DATA_ROOT}/sites/{site}/runs/{run}/frames/*.png   (sharp 와 mapping, hardlink)
+#   ${DATA_ROOT}/sites/{site}/runs/{run}/masks/*.png    (mask 와 mapping, hardlink)
 # dry-run plan 확인: 위 명령에 --dry-run 추가
+```
+
+**Mode 선택 가이드:**
+
+| Mode | 사용 시점 | 디스크 | docker bind mount 호환 |
+|---|---|---|---|
+| `hardlink` (default) | raw 와 dest 가 **동일 filesystem** 일 때 (가장 흔한 경우) | 추가 0 | ✓ |
+| `symlink` | raw 와 dest 가 다른 FS 인데 docker 미사용 시 | 추가 0 | ✗ docker bind 시 broken |
+| `rsync` | raw 와 dest 가 다른 FS + docker 사용 시 | ~2× | ✓ |
+| `mv` | 원본 보존 불필요 시 (가급적 사용 X) | 절약 | ✓ |
+
+스크립트가 `hardlink` 선택 시 src/dest 의 mount point 를 자동 비교 → 다른 FS 면 fatal 종료 + `rsync` 권장 메시지 출력.
+
+**구체 예시 — I-1 site 의 before / after.**
+
+변환 전 (raw 원본):
+```
+/data/minsuh/raw_frames/I-1/run-01/
+├── sharp/
+│   ├── 000001.png      # 사용자 모듈이 추출한 sharp frame (PNG 통일 후)
+│   ├── 000002.png
+│   ├── 000003.png
+│   ├── ...
+│   └── 001500.png
+└── mask/
+    ├── 000001.png      # dynamic instance 검출된 frame 의 binary exclusion mask
+    ├── 000005.png      # 000002~000004 는 skip_empty 로 mask 미생성
+    ├── 000007.png
+    ├── ...
+    └── 001498.png
+```
+
+변환 후 (ARS layout — 모든 파일이 symlink, 디스크 추가 사용 0):
+```
+/data/minsuh/experiment/data/sites/I-1/runs/run-01/
+├── frames/
+│   ├── 000001.png → /data/minsuh/raw_frames/I-1/run-01/sharp/000001.png
+│   ├── 000002.png → /data/minsuh/raw_frames/I-1/run-01/sharp/000002.png
+│   ├── 000003.png → /data/minsuh/raw_frames/I-1/run-01/sharp/000003.png
+│   ├── ...
+│   └── 001500.png → /data/minsuh/raw_frames/I-1/run-01/sharp/001500.png
+└── masks/
+    ├── 000001.png → /data/minsuh/raw_frames/I-1/run-01/mask/000001.png
+    ├── 000005.png → /data/minsuh/raw_frames/I-1/run-01/mask/000005.png
+    ├── 000007.png → /data/minsuh/raw_frames/I-1/run-01/mask/000007.png
+    ├── ...
+    └── 001498.png → /data/minsuh/raw_frames/I-1/run-01/mask/001498.png
+```
+
+본 예시에서 `frames/` 는 1,500개, `masks/` 는 (예: 380개) — 두 폴더는 독립 collection (§3.2 (d)). intersection 만 §4.5e ablation evidence 로 사용.
+
+검증 (변환 직후):
+```bash
+# I-1 frames symlink 첫 3개 확인 — 모두 raw_frames 의 sharp 로 향해야 함
+ls -la ${DATA_ROOT}/sites/I-1/runs/run-01/frames | head -5
+# 예상:
+#   lrwxr-xr-x  ...  000001.png -> /data/minsuh/raw_frames/I-1/run-01/sharp/000001.png
+#   lrwxr-xr-x  ...  000002.png -> /data/minsuh/raw_frames/I-1/run-01/sharp/000002.png
+#   ...
+
+# I-1 masks symlink 첫 3개 확인 — 모두 raw_frames 의 mask 로 향해야 함
+ls -la ${DATA_ROOT}/sites/I-1/runs/run-01/masks | head -5
+# 예상:
+#   lrwxr-xr-x  ...  000001.png -> /data/minsuh/raw_frames/I-1/run-01/mask/000001.png
+#   lrwxr-xr-x  ...  000005.png -> /data/minsuh/raw_frames/I-1/run-01/mask/000005.png
+#   ...
+
+# Broken symlink (target 누락) 검출 — 0 이어야 함
+find ${DATA_ROOT}/sites -type l ! -exec test -e {} \; -print | wc -l
 ```
 
 ### 3.5 Mask 사용 정책
@@ -183,7 +255,7 @@ bash experiments/scripts/run_pipeline_p1.sh \
 docker run --rm \
     -v "${DATA_ROOT}":/data \
     -v "$(pwd)/experiments/adapters":/adapters \
-    ars/m1_colmap:latest \
+    ars/m1_colmap:3.9.1 \
     python /adapters/colmap_to_intrinsics.py \
         --cameras /data/outputs/P1/I-1/run-01/pose/sparse/0/cameras.bin \
         --output  /data/sites/I-1/calib/intrinsics.json
@@ -255,7 +327,7 @@ for SITE in I-1 I-2 I-3 L-1 L-2 L-3; do
     docker run --rm \
         -v "${DATA_ROOT}":/data \
         -v "$(pwd)/experiments/adapters":/adapters \
-        ars/m1_colmap:latest \
+        ars/m1_colmap:3.9.1 \
         python /adapters/colmap_to_intrinsics.py \
             --cameras /data/outputs/P1/${SITE}/run-01/pose/sparse/0/cameras.bin \
             --output  /data/sites/${SITE}/calib/intrinsics.json
@@ -301,7 +373,138 @@ PAPER_DRAFT.md Table 2 의 P1 / P9 column 을 우선 fill 후, 나머지 P2–P8
 
 ---
 
-## 10. Cross-reference
+## 10. Multi-server setup (image distribution + GPU 점유 처리)
+
+학교 GPU 클러스터 등 다중 host 환경에서 build 반복 없이 image 를 전송하는 절차 + GPU 점유 변동 대응.
+
+### 10.1 Docker image 전송 (build 1회 → 모든 host 에 배포)
+
+**기존 build 완료 서버에서 4 image export:**
+```bash
+mkdir -p /data/minsuh/docker_images
+docker save ars/m1_colmap:3.9.1 \
+            ars/m7_mast3r_slam:latest \
+            ars/m8_3dgs:latest \
+            ars/m9_2dgs:latest \
+  | gzip > /data/minsuh/docker_images/ars_all.tar.gz
+ls -lh /data/minsuh/docker_images/ars_all.tar.gz   # 예상 ~8–15 GB
+```
+
+**새 서버에서 import:**
+```bash
+# NFS 공유 시 — 같은 경로에서 load
+docker load < /data/minsuh/docker_images/ars_all.tar.gz
+
+# NFS 미공유 시 — scp 후 load
+scp big-rodin1:/data/minsuh/docker_images/ars_all.tar.gz /data/minsuh/docker_images/
+docker load < /data/minsuh/docker_images/ars_all.tar.gz
+
+# 검증
+docker images | grep "ars/"
+bash experiments/scripts/verify_dockers.sh --skip-build   # smoke test 만
+```
+
+새 서버에서 처음 진입 시 build 반복 (~50–75 min) 회피. 같은 hardware class (RTX 4090 + CUDA 11.8) 라면 image 호환 완전.
+
+### 10.2 GPU 점유 변동 — manual flag
+
+```bash
+# Free GPU 확인 (memory.used < 100 MiB)
+nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader
+
+# 시나리오별 명령
+# (a) 2 GPU 모두 free
+bash run_pipeline_p1.sh --site I-1 --run run-01 \
+    --data-root "${DATA_ROOT}" --gpu-pose 0 --gpu-rep 1   # default
+
+# (b) GPU 0 점유, GPU 1 만 free (pose+rep sequential)
+bash run_pipeline_p1.sh --site I-1 --run run-01 \
+    --data-root "${DATA_ROOT}" --gpu-pose 1 --gpu-rep 1
+
+# (c) GPU 1 점유, GPU 0 만 free
+bash run_pipeline_p1.sh --site I-1 --run run-01 \
+    --data-root "${DATA_ROOT}" --gpu-pose 0 --gpu-rep 0
+```
+
+Wall-time 영향 — 단일 GPU 시 pose+rep sequential 이라 ~2× wall-time 증가 (1 site P1 약 1–1.5 h → 약 2–3 h).
+
+---
+
+## 11. Troubleshooting
+
+### 11.1 `[FATAL] frames 디렉토리에 PNG 없음` — symlink + docker mount 문제
+
+증상: `bash run_pipeline_p1.sh` 가 `n_frames: 0` 출력하며 fatal. 그러나 host 측에서 `ls ${DATA_ROOT}/sites/${SITE}/runs/${RUN}/frames/` 확인 시 symlink 다수 존재.
+
+원인: `frames/` 의 symlink target 이 docker container 내부에서 안 보임. `-v ${DATA_ROOT}:/data` 만 bind 되고 symlink target 의 raw root (예: `/data/minsuh/raw_frames`) 가 미bind. 또한 `find -type f` 가 symlink (`-type l`) 를 제외하여 host 측 frames count 도 0.
+
+해결: hardlink mode 로 재변환 (§3.4 default). 1-shot 명령:
+```bash
+for SITE in I-1 I-2 I-3 L-1 L-2 L-3; do
+    SRC=/data/minsuh/raw_frames/${SITE}/run-01/sharp
+    DST=/data/minsuh/experiment/data/sites/${SITE}/runs/run-01/frames
+    if [ -d "$SRC" ]; then
+        rm -rf "$DST"; mkdir -p "$DST"
+        for f in "$SRC"/*.png; do ln "$f" "$DST/$(basename "$f")"; done
+        echo "  [${SITE}] frames hardlink: $(ls "$DST" | wc -l)"
+    fi
+    SRC_M=/data/minsuh/raw_frames/${SITE}/run-01/mask
+    DST_M=/data/minsuh/experiment/data/sites/${SITE}/runs/run-01/masks
+    if [ -d "$SRC_M" ]; then
+        rm -rf "$DST_M"; mkdir -p "$DST_M"
+        for f in "$SRC_M"/*.png; do ln "$f" "$DST_M/$(basename "$f")"; done
+        echo "  [${SITE}] masks  hardlink: $(ls "$DST_M" | wc -l)"
+    fi
+done
+```
+
+또는 reorganize_frames.sh 를 `--mode hardlink` 로 재실행 (동일 결과).
+
+### 11.2 `pull access denied for ars/...` — image 미존재
+
+새 서버에서 `verify_dockers.sh --skip-build` 실행 시 image pull 실패. 원인 — image 가 local-only (registry 미등록), `--skip-build` 로 build 도 안 함.
+
+해결:
+- **옵션 A:** build 새로 실행 — `bash verify_dockers.sh` (--skip-build 제거, ~50–75 min)
+- **옵션 B:** 기존 서버에서 export → 새 서버 import (§10.1)
+
+### 11.3 Diagnostic 1-shot — frames 디렉토리 상태 점검
+
+`run_pipeline_p1.sh` fail 시 가장 먼저 실행:
+```bash
+DR=/data/minsuh/experiment/data
+SITE=I-1
+RUN=run-01
+
+echo "=== (1) ARS layout 디렉토리 ==="
+ls -la "${DR}/sites/${SITE}/runs/${RUN}/" | head -10
+
+echo "=== (2) frames/ 내부 ==="
+ls -la "${DR}/sites/${SITE}/runs/${RUN}/frames/" | head -10
+
+echo "=== (3) Broken symlink ==="
+find "${DR}/sites/${SITE}/runs/${RUN}/frames" -type l ! -exec test -e {} \; -print | head -5
+
+echo "=== (4) Raw source 확인 ==="
+for SRC in /data/minsuh/raw_frames/${SITE}/${RUN}/sharp \
+           /scratch/minsuh/raw_frames/${SITE}/${RUN}/sharp; do
+    if [ -d "${SRC}" ]; then
+        echo "  ✓ ${SRC}: png=$(ls ${SRC}/*.png 2>/dev/null | wc -l)"
+    else
+        echo "  ✗ ${SRC}: 없음"
+    fi
+done
+```
+
+해석:
+- (1) `frames/` 폴더 미존재 → §3.4 reorganize 실행
+- (2) 비어있음 → §11.1 hardlink 재변환
+- (3) broken (red color) → §11.1 hardlink 재변환
+- (4) png=0 모두 → raw frames 미적재 (사용자 측 video-to-image 모듈 출력 확인)
+
+---
+
+## 12. Cross-reference
 
 - 어댑터: [`adapters/colmap_to_intrinsics.py`](adapters/colmap_to_intrinsics.py) · [`adapters/mast3r_slam_to_colmap.py`](adapters/mast3r_slam_to_colmap.py)
 - 파이프라인 wrapper: [`scripts/run_pipeline_p1.sh`](scripts/run_pipeline_p1.sh) · [`scripts/run_pipeline_p9.sh`](scripts/run_pipeline_p9.sh) · [`scripts/run_pilot_i1.sh`](scripts/run_pilot_i1.sh)

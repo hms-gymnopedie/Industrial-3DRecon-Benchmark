@@ -15,7 +15,10 @@
 #   {DEST_ROOT}/sites/{site}/runs/{run}/frames/*.png   ← sharp 와 mapping
 #   {DEST_ROOT}/sites/{site}/runs/{run}/masks/*.png    ← mask 와 mapping
 #
-# Default mode: symlink (디스크 중복 없음). rsync / mv 도 선택 가능.
+# Default mode: hardlink (docker mount 호환 — symlink 는 docker container 내부에서
+# target prefix 가 안 보여 broken 됨; same-filesystem 가정 하에 hardlink 가 안전).
+# 다른 mode: symlink (raw 와 dest 가 다른 FS / docker 미사용 시 사용 권장),
+# rsync (디스크 ~2× — different FS 에서 안전), mv (원본 보존 불필요할 때).
 # Mask 폴더는 사용자 측에 없을 수 있음 — 없으면 자동 skip.
 #
 # Usage:
@@ -24,14 +27,14 @@
 #        --dest /data/minsuh/experiment/data \
 #        --sites "I-1 I-2 I-3 L-1 L-2 L-3" \
 #        --runs  "run-01" \
-#        --mode  symlink
+#        --mode  hardlink
 #
 # 옵션:
 #   --src         원본 root (필수, {site}/{run}/{sharp,mask}/ 구조 가정)
 #   --dest        ARS data root (예: /data/minsuh/experiment/data)
 #   --sites       공백 구분 site ID 목록 (default: "I-1 I-2 I-3 L-1 L-2 L-3")
 #   --runs        공백 구분 run ID 목록 (default: "run-01")
-#   --mode        symlink (default) | rsync | mv
+#   --mode        hardlink (default) | symlink | rsync | mv
 #   --sharp-dir   sharp sub-folder 이름 변경 (default: "sharp")
 #   --mask-dir    mask sub-folder 이름 변경 (default: "mask")
 #   --skip-mask   mask 폴더 자체를 무시 (sharp 만 처리)
@@ -43,7 +46,7 @@ SRC_ROOT=""
 DEST_ROOT=""
 SITES="I-1 I-2 I-3 L-1 L-2 L-3"
 RUNS="run-01"
-MODE="symlink"
+MODE="hardlink"
 SHARP_SUB="sharp"
 MASK_SUB="mask"
 SKIP_MASK=0
@@ -70,9 +73,25 @@ done
 [ -d "${SRC_ROOT}" ]  || { echo "[FATAL] src 디렉토리 없음: ${SRC_ROOT}"; exit 2; }
 
 case "${MODE}" in
-    symlink|rsync|mv) ;;
-    *) echo "[FATAL] --mode 는 symlink|rsync|mv 중 하나"; exit 2 ;;
+    hardlink|symlink|rsync|mv) ;;
+    *) echo "[FATAL] --mode 는 hardlink|symlink|rsync|mv 중 하나"; exit 2 ;;
 esac
+
+# hardlink mode: same-filesystem 사전 검증 (Linux GNU stat 우선; BSD/macOS 는 skip)
+if [ "${MODE}" = "hardlink" ]; then
+    SRC_FS=$(stat -c '%m' "${SRC_ROOT}" 2>/dev/null || echo "")
+    DEST_PARENT=$(dirname "${DEST_ROOT}")
+    mkdir -p "${DEST_PARENT}"
+    DEST_FS=$(stat -c '%m' "${DEST_PARENT}" 2>/dev/null || echo "")
+    if [ -n "${SRC_FS}" ] && [ -n "${DEST_FS}" ] && [ "${SRC_FS}" != "${DEST_FS}" ]; then
+        echo "[FATAL] hardlink 불가 — src(${SRC_FS}) 와 dest(${DEST_FS}) 가 다른 filesystem."
+        echo "        --mode rsync 또는 --mode symlink 로 재시도 (단 symlink 는 docker mount 호환 X)."
+        exit 2
+    fi
+    if [ -z "${SRC_FS}" ] || [ -z "${DEST_FS}" ]; then
+        echo "[warn] GNU stat (-c '%m') 미지원 (BSD/macOS?) — same-FS 검증 skip. cross-device error 시 ln 자체가 fail."
+    fi
+fi
 
 blue()  { printf "\033[34m%s\033[0m\n" "$*"; }
 green() { printf "\033[32m%s\033[0m\n" "$*"; }
@@ -125,6 +144,17 @@ process_sub_folder() {
     mkdir -p "${dest_dir}"
 
     case "${MODE}" in
+        hardlink)
+            # 기존 symlink / hardlink / 파일 제거 후 hardlink 재생성 (idempotent).
+            # docker mount 호환 — bind mount 시 hardlink 는 실제 파일처럼 보임.
+            local f fname
+            for f in "${src_dir}"/*.png; do
+                [ -f "$f" ] || continue
+                fname=$(basename "$f")
+                [ -e "${dest_dir}/${fname}" ] || [ -L "${dest_dir}/${fname}" ] && rm -f "${dest_dir}/${fname}"
+                ln "$f" "${dest_dir}/${fname}"
+            done
+            ;;
         symlink)
             local f fname
             for f in "${src_dir}"/*.png; do

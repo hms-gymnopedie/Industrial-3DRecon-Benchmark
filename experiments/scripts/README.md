@@ -39,10 +39,13 @@ bash experiments/scripts/verify_dockers.sh --skip-build
 
 | 스크립트 | 역할 | 입력 | 출력 |
 |---|---|---|---|
+| [`reorganize_frames.sh`](reorganize_frames.sh) | raw `{site}/{run}/{sharp,mask}/` → ARS `sites/{site}/runs/{run}/{frames,masks}/` 변환. **mode: hardlink (default) \| symlink \| rsync \| mv** | src/dest/sites/runs/mode | dest 트리 + symlink/hardlink |
 | [`run_pipeline_p1.sh`](run_pipeline_p1.sh) | **P1 (H-Worst)**: M1 COLMAP → M8 3DGS | site/run/iter/GPU | `data/outputs/P1/{site}/{run}/{pose,recon,logs,metrics.json}` |
 | [`run_pipeline_p9.sh`](run_pipeline_p9.sh) | **P9 (H-Best)**: M7 MASt3R-SLAM → adapter → M9 2DGS | site/run/iter/GPU/weights | `data/outputs/P9/{site}/{run}/{pose_native,pose,recon,logs,metrics.json}` |
 | [`run_pilot_i1.sh`](run_pilot_i1.sh) | I-1 site pilot driver — P1/P9 병렬 실행 + 비교 출력 | mode (single-host \| two-host) | 두 pipeline 결과 + compare table |
 | [`compute_metrics.py`](compute_metrics.py) | recon 디렉토리 → metrics.json 변환 | recon-dir + wall times | metrics.json |
+
+`reorganize_frames.sh` 의 default mode 는 **hardlink** (docker bind mount 호환). symlink 는 docker container 내부에서 target prefix 가 안 보여 broken 됨 — same-FS 인 한 hardlink 가 안전. 자세한 mode 선택 가이드는 [`RUN_PILOT.md §3.4`](../RUN_PILOT.md) 참조.
 
 ### 2.1 표준 호출 — single-host (4 GPU 단일 호스트)
 
