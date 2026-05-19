@@ -524,7 +524,37 @@ docker run --rm \
 - 모든 docker run 에 `--user "$(id -u):$(id -g)"` 추가 → 산출물이 host user 권한으로 생성
 - Stage 1.5 / 2.5 의 image_undistorter 후속에 sparse → sparse/0 post-process mv 자동 실행
 
-### 11.4 `pull access denied for ars/...` — image 미존재
+### 11.4 `torch.cuda.OutOfMemoryError` — 3DGS/2DGS train 시 GPU OOM
+
+증상: P1 Stage 2 (M8 3DGS) 또는 P9 Stage 3 (M9 2DGS) 의 "Loading Test Cameras" 직후 `torch.cuda.OutOfMemoryError`. 본인 process 가 GPU 23 GiB+ 사용 후 추가 26 MiB 못 할당하는 형태.
+
+원인: 3DGS upstream `--data_device` default 가 `cuda` → 모든 frame (730+) 의 1920×1080 image 를 GPU 에 적재. 단일 4090 (24 GiB) 한계 초과.
+
+해결 — 영구 fix 완료 (`git pull` 후 재시도):
+- `run_pipeline_p1.sh` 의 3DGS train docker call 에 `--data_device cpu` 추가
+- `run_pipeline_p9.sh` 의 2DGS train docker call 동일 추가
+- 이후 image 는 CPU 메모리에 적재, batch 단위로 GPU 전송 → GPU 메모리 ~6 GiB 으로 감소
+
+Trade-off:
+- Quality: 동일 (image bit-perfect 전송)
+- Wall-time: +20-30% (CPU↔GPU 전송 overhead)
+- GPU memory: 23 GiB → ~6 GiB (단일 4090 안전)
+
+ad-hoc 적용 (git pull 안 하고 즉시):
+```bash
+# script 의 docker run 명령을 직접 복사하여 --data_device cpu 추가하여 실행
+docker run --rm --gpus '"device=1"' \
+    --user "$(id -u):$(id -g)" \
+    -v /data/minsuh/experiment/data:/data \
+    ars/m8_3dgs:latest \
+    python /opt/gaussian_splatting/train.py \
+        --source_path /data/outputs/P1/I-1/run-01/pose_undistorted \
+        --model_path  /data/outputs/P1/I-1/run-01/recon \
+        --iterations 30000 --resolution 1 \
+        --data_device cpu --eval
+```
+
+### 11.5 `pull access denied for ars/...` — image 미존재
 
 새 서버에서 `verify_dockers.sh --skip-build` 실행 시 image pull 실패. 원인 — image 가 local-only (registry 미등록), `--skip-build` 로 build 도 안 함.
 
@@ -532,7 +562,7 @@ docker run --rm \
 - **옵션 A:** build 새로 실행 — `bash verify_dockers.sh` (--skip-build 제거, ~50–75 min)
 - **옵션 B:** 기존 서버에서 export → 새 서버 import (§10.1)
 
-### 11.5 Diagnostic 1-shot — frames 디렉토리 상태 점검
+### 11.6 Diagnostic 1-shot — frames 디렉토리 상태 점검
 
 `run_pipeline_p1.sh` fail 시 가장 먼저 실행:
 ```bash

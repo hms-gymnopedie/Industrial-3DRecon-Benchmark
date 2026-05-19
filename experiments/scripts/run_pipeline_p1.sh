@@ -212,6 +212,7 @@ if [ "${SKIP_REP}" -eq 0 ]; then
             --model_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/recon" \
             --iterations "${ITERATIONS}" \
             --resolution 1 \
+            --data_device cpu \
             --eval \
             2>&1 | tee "${LOG_DIR}/m8_3dgs.log"
 else
