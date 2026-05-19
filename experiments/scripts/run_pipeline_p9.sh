@@ -124,6 +124,7 @@ if [ "${SKIP_POSE}" -eq 0 ]; then
     # repo 검수 시점에 조정 필요. 본 호출은 표준 wrapper 가정.
     docker run --rm \
         --gpus "\"device=${GPU_POSE}\"" \
+        --user "$(id -u):$(id -g)" \
         -v "${DATA_ROOT}:/data" \
         -v "${WEIGHTS_DIR}:/weights" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m7" \
@@ -157,6 +158,7 @@ if [ "${SKIP_ADAPT}" -eq 0 ]; then
     PLY_PATH="/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose_native/points.ply"
 
     docker run --rm \
+        --user "$(id -u):$(id -g)" \
         -v "${DATA_ROOT}:/data" \
         -v "${REPO_ROOT}/experiments/adapters:/adapters" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-adapter" \
@@ -185,11 +187,16 @@ fi
 # Stage 2.5: COLMAP image_undistorter — OPENCV → PINHOLE
 #   2DGS dataset_readers.py 가 OPENCV camera model 거부 (3DGS fork limit).
 #   m1_colmap 컨테이너 재활용 (M7 컨테이너에 colmap binary 없음).
-#   Idempotent: pose_undistorted/sparse/cameras.{bin,txt} 가 이미 있으면 skip.
+#
+# IMPORTANT: COLMAP image_undistorter 는 sparse model 을 sparse/ 에
+# 직접 출력 (sparse/0/ 아님). 2DGS dataset_readers 는 sparse/0/ 기대
+# → post-process mv 로 sparse/*.bin → sparse/0/*.bin 재배치 필수.
+#
+# Idempotent: pose_undistorted/sparse/0/cameras.{bin,txt} 가 이미 있으면 skip.
 # ---------------------------------------------------------------
 T_UNDISTORT_START=$(date +%s)
 UNDISTORT_DONE=0
-if [ -f "${UNDISTORT_DIR}/sparse/cameras.bin" ] || [ -f "${UNDISTORT_DIR}/sparse/cameras.txt" ]; then
+if [ -f "${UNDISTORT_DIR}/sparse/0/cameras.bin" ] || [ -f "${UNDISTORT_DIR}/sparse/0/cameras.txt" ]; then
     echo
     echo "[skip] Stage 2.5 (image_undistorter) — undistorted output 이미 존재"
     UNDISTORT_DONE=1
@@ -201,6 +208,7 @@ if [ "${SKIP_UNDISTORT}" -eq 0 ] && [ "${UNDISTORT_DONE}" -eq 0 ]; then
     echo "----------------------------------------------------------------"
     docker run --rm \
         --gpus "\"device=${GPU_POSE}\"" \
+        --user "$(id -u):$(id -g)" \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-undistort" \
         "${M1_IMAGE}" \
@@ -210,16 +218,24 @@ if [ "${SKIP_UNDISTORT}" -eq 0 ] && [ "${UNDISTORT_DONE}" -eq 0 ]; then
             --output_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose_undistorted" \
             --output_type COLMAP \
             2>&1 | tee "${LOG_DIR}/colmap_undistort.log"
+
+    # Post-process: image_undistorter 의 sparse/ 출력을 sparse/0/ 로 재배치
+    # (2DGS dataset_readers.py 의 source_path/sparse/0/ 기대와 매칭)
+    if [ -f "${UNDISTORT_DIR}/sparse/cameras.bin" ] && [ ! -f "${UNDISTORT_DIR}/sparse/0/cameras.bin" ]; then
+        echo "  [post-undistort] sparse/*.bin → sparse/0/*.bin 재배치"
+        mkdir -p "${UNDISTORT_DIR}/sparse/0"
+        mv "${UNDISTORT_DIR}/sparse"/*.bin "${UNDISTORT_DIR}/sparse/0/"
+    fi
 elif [ "${SKIP_UNDISTORT}" -eq 1 ]; then
     echo "[skip] Stage 2.5 (image_undistorter) — --skip-undistort"
 fi
 T_UNDISTORT_END=$(date +%s)
 T_UNDISTORT=$(( T_UNDISTORT_END - T_UNDISTORT_START ))
 
-# Sanity check undistorted output (2DGS 진입 전 필수 검증)
-if [ ! -f "${UNDISTORT_DIR}/sparse/cameras.bin" ] && [ ! -f "${UNDISTORT_DIR}/sparse/cameras.txt" ]; then
-    echo "[FATAL] image_undistorter 출력 누락: ${UNDISTORT_DIR}/sparse/cameras.{bin,txt}"
-    echo "        Stage 2.5 실패 — log 확인: ${LOG_DIR}/colmap_undistort.log"
+# Sanity check undistorted output (2DGS 진입 전 필수 검증; sparse/0/ 경로로 검사)
+if [ ! -f "${UNDISTORT_DIR}/sparse/0/cameras.bin" ] && [ ! -f "${UNDISTORT_DIR}/sparse/0/cameras.txt" ]; then
+    echo "[FATAL] image_undistorter 출력 누락: ${UNDISTORT_DIR}/sparse/0/cameras.{bin,txt}"
+    echo "        Stage 2.5 실패 또는 sparse/0/ 재배치 실패 — log 확인: ${LOG_DIR}/colmap_undistort.log"
     exit 4
 fi
 
@@ -234,6 +250,7 @@ if [ "${SKIP_REP}" -eq 0 ]; then
     echo "----------------------------------------------------------------"
     docker run --rm \
         --gpus "\"device=${GPU_REP}\"" \
+        --user "$(id -u):$(id -g)" \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m9" \
         "${M9_IMAGE}" \
@@ -250,6 +267,7 @@ if [ "${SKIP_REP}" -eq 0 ]; then
     echo "  [extra] 2DGS native mesh extraction (TSDF fusion)"
     docker run --rm \
         --gpus "\"device=${GPU_REP}\"" \
+        --user "$(id -u):$(id -g)" \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m9-mesh" \
         "${M9_IMAGE}" \
