@@ -125,12 +125,12 @@ if [ "${SKIP_POSE}" -eq 0 ]; then
     docker run --rm \
         --gpus "\"device=${GPU_POSE}\"" \
         --user "$(id -u):$(id -g)" \
-        --entrypoint "" \
+        --entrypoint python \
         -v "${DATA_ROOT}:/data" \
         -v "${WEIGHTS_DIR}:/weights" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m7" \
         "${M7_IMAGE}" \
-        python /opt/mast3r_slam/main.py \
+        /opt/mast3r_slam/main.py \
             --image_dir "/data/sites/${SITE}/runs/${RUN}/frames" \
             --output_dir "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose_native" \
             --checkpoint "/weights/${MAST3R_CKPT}" \
@@ -160,12 +160,12 @@ if [ "${SKIP_ADAPT}" -eq 0 ]; then
 
     docker run --rm \
         --user "$(id -u):$(id -g)" \
-        --entrypoint "" \
+        --entrypoint python \
         -v "${DATA_ROOT}:/data" \
         -v "${REPO_ROOT}/experiments/adapters:/adapters" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-adapter" \
         "${M7_IMAGE}" \
-        python /adapters/mast3r_slam_to_colmap.py \
+        /adapters/mast3r_slam_to_colmap.py \
             --trajectory "${TRAJECTORY_PATH}" \
             --intrinsics "/data/sites/${SITE}/calib/intrinsics.json" \
             --frames-dir "/data/sites/${SITE}/runs/${RUN}/frames" \
@@ -211,11 +211,11 @@ if [ "${SKIP_UNDISTORT}" -eq 0 ] && [ "${UNDISTORT_DONE}" -eq 0 ]; then
     docker run --rm \
         --gpus "\"device=${GPU_POSE}\"" \
         --user "$(id -u):$(id -g)" \
-        --entrypoint "" \
+        --entrypoint colmap \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-undistort" \
         "${M1_IMAGE}" \
-        colmap image_undistorter \
+        image_undistorter \
             --image_path  "/data/sites/${SITE}/runs/${RUN}/frames" \
             --input_path  "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose/sparse/0" \
             --output_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose_undistorted" \
@@ -251,15 +251,15 @@ if [ "${SKIP_REP}" -eq 0 ]; then
     echo "----------------------------------------------------------------"
     echo "  Stage 3: M9 2DGS train (${ITERATIONS} iter)"
     echo "----------------------------------------------------------------"
+    # GPU 활용 우선 정책 (PAPER §3.6 F2; P1 과 동일 hyperparameter)
     docker run --rm \
         --gpus "\"device=${GPU_REP}\"" \
         --user "$(id -u):$(id -g)" \
-        --entrypoint "" \
+        --entrypoint python \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m9" \
         "${M9_IMAGE}" \
-        # GPU 활용 우선 정책 (PAPER §3.6 F2; P1 과 동일 hyperparameter)
-        python /opt/two_dgs/train.py \
+        /opt/two_dgs/train.py \
             --source_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose_undistorted" \
             --model_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/recon" \
             --iterations "${ITERATIONS}" \
@@ -274,11 +274,11 @@ if [ "${SKIP_REP}" -eq 0 ]; then
     docker run --rm \
         --gpus "\"device=${GPU_REP}\"" \
         --user "$(id -u):$(id -g)" \
-        --entrypoint "" \
+        --entrypoint python \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m9-mesh" \
         "${M9_IMAGE}" \
-        python /opt/two_dgs/render.py \
+        /opt/two_dgs/render.py \
             --model_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/recon" \
             --skip_train --skip_test \
             --mesh_res 1024 \

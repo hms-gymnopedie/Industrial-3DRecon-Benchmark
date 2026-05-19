@@ -105,11 +105,11 @@ if [ "${SKIP_POSE}" -eq 0 ]; then
     docker run --rm \
         --gpus "\"device=${GPU_POSE}\"" \
         --user "$(id -u):$(id -g)" \
-        --entrypoint "" \
+        --entrypoint colmap \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m1" \
         "${M1_IMAGE}" \
-        colmap automatic_reconstructor \
+        automatic_reconstructor \
             --image_path "/data/sites/${SITE}/runs/${RUN}/frames" \
             --workspace_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose" \
             --camera_model PINHOLE \
@@ -163,11 +163,11 @@ if [ "${SKIP_UNDISTORT}" -eq 0 ] && [ "${UNDISTORT_DONE}" -eq 0 ]; then
     docker run --rm \
         --gpus "\"device=${GPU_POSE}\"" \
         --user "$(id -u):$(id -g)" \
-        --entrypoint "" \
+        --entrypoint colmap \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-undistort" \
         "${M1_IMAGE}" \
-        colmap image_undistorter \
+        image_undistorter \
             --image_path  "/data/sites/${SITE}/runs/${RUN}/frames" \
             --input_path  "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose/sparse/0" \
             --output_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose_undistorted" \
@@ -203,18 +203,18 @@ if [ "${SKIP_REP}" -eq 0 ]; then
     echo "----------------------------------------------------------------"
     echo "  Stage 2: M8 3DGS train (${ITERATIONS} iter)"
     echo "----------------------------------------------------------------"
+    # GPU 활용 우선 정책 (PAPER §3.6 F2):
+    #   --resolution 2 = 1920×1080 → 960×540 다운샘플 (image GPU 적재 시
+    #                    메모리 ~5-6 GiB; 단일 4090 24 GiB 충분)
+    #   --data_device cuda = default — image GPU 적재 (wall-time 빠름)
     docker run --rm \
         --gpus "\"device=${GPU_REP}\"" \
         --user "$(id -u):$(id -g)" \
-        --entrypoint "" \
+        --entrypoint python \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m8" \
         "${M8_IMAGE}" \
-        # GPU 활용 우선 정책 (PAPER §3.6 F2):
-        #   --resolution 2 = 1920×1080 → 960×540 다운샘플 (image GPU 적재 시
-        #                    메모리 ~5-6 GiB; 단일 4090 24 GiB 충분)
-        #   --data_device cuda = default — image GPU 적재 (wall-time 빠름)
-        python /opt/gaussian_splatting/train.py \
+        /opt/gaussian_splatting/train.py \
             --source_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose_undistorted" \
             --model_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/recon" \
             --iterations "${ITERATIONS}" \
