@@ -584,7 +584,38 @@ docker run --rm --user "$(id -u):$(id -g)" \
 ```
 위 명령이 train.py --help 정상 출력하면 ENTRYPOINT 우회로 해결됨.
 
-### 11.6 `pull access denied for ars/...` — image 미존재
+### 11.6 `lietorch undefined symbol: _ZNK3c106SymInt13toSymNodeImplEv` (M7 MASt3R-SLAM)
+
+증상: P9 Stage 1 (M7 MASt3R-SLAM) 진입 시 `OSError: lietorch/lib/liblietorch.so: undefined symbol: _ZNK3c106SymInt13toSymNodeImplEv`.
+
+원인: pip 의 prebuilt `lietorch` wheel 이 본 image 의 PyTorch (2.1.0+cu118) 와 *다른 PyTorch 버전* 으로 build 되어 C++ ABI mismatch. `c10::SymInt::toSymNodeImpl()` 는 PyTorch 2.1+ 의 symbol — wheel 의 PyTorch < 2.1 으로 build 되었을 때 fail.
+
+해결 — 영구 fix 완료 (m7 Dockerfile 갱신): `pip install lietorch` (wheel) → `pip install --no-build-isolation git+https://github.com/princeton-vl/lietorch.git` (source build) 로 변경 → image rebuild 필요.
+
+각 host 에서 image rebuild:
+```bash
+cd /scratch/minsuh/Industrial-3DRecon-Benchmark
+git pull origin main
+bash experiments/scripts/verify_dockers.sh m7   # M7 만 rebuild (~15-25 min)
+```
+
+또는 *1 host 에서 rebuild → save → distribute* 가 더 빠름:
+```bash
+# Host A — rebuild
+bash experiments/scripts/verify_dockers.sh m7
+
+# Host A — export
+docker save ars/m7_mast3r_slam:latest | gzip > /tmp/m7.tar.gz
+
+# Host B, C, ... — import (scp / NFS 공유)
+docker load < /tmp/m7.tar.gz
+
+# 검증
+docker run --rm --entrypoint python ars/m7_mast3r_slam:latest \
+    -c "import lietorch; print('OK')"
+```
+
+### 11.7 `pull access denied for ars/...` — image 미존재
 
 새 서버에서 `verify_dockers.sh --skip-build` 실행 시 image pull 실패. 원인 — image 가 local-only (registry 미등록), `--skip-build` 로 build 도 안 함.
 
@@ -592,7 +623,7 @@ docker run --rm --user "$(id -u):$(id -g)" \
 - **옵션 A:** build 새로 실행 — `bash verify_dockers.sh` (--skip-build 제거, ~50–75 min)
 - **옵션 B:** 기존 서버에서 export → 새 서버 import (§10.1)
 
-### 11.7 Diagnostic 1-shot — frames 디렉토리 상태 점검
+### 11.8 Diagnostic 1-shot — frames 디렉토리 상태 점검
 
 `run_pipeline_p1.sh` fail 시 가장 먼저 실행:
 ```bash

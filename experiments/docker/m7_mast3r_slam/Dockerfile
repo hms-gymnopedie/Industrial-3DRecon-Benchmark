@@ -60,8 +60,13 @@ RUN pip install \
         trimesh \
         scikit-image \
         plyfile \
-        evo \
-        lietorch
+        evo
+
+# lietorch: source build with --no-build-isolation 으로 본 image 의 PyTorch
+# 2.1.0+cu118 사용. pip 의 prebuilt wheel 은 다른 PyTorch ABI 로 build 되어
+# `undefined symbol: _ZNK3c106SymInt13toSymNodeImplEv` 같은 ABI mismatch 발생.
+RUN pip install --no-cache-dir --no-build-isolation \
+        git+https://github.com/princeton-vl/lietorch.git
 
 # Editable install of MASt3R-SLAM package (per repo convention).
 # If the repo lacks setup.py / pyproject.toml at root, the editable install
