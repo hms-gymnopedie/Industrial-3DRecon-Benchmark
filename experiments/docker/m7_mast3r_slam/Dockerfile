@@ -60,7 +60,8 @@ RUN pip install \
         trimesh \
         scikit-image \
         plyfile \
-        evo
+        evo \
+        faiss-cpu
 
 # lietorch: source build with --no-build-isolation 으로 본 image 의 PyTorch
 # 2.1.0+cu118 사용. pip 의 prebuilt wheel 은 다른 PyTorch ABI 로 build 되어

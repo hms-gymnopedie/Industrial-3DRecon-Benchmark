@@ -633,7 +633,43 @@ docker run --rm --entrypoint python \
     -c "from mast3r_slam.global_opt import FactorGraph; print('OK')"
 ```
 
-### 11.8 `pull access denied for ars/...` — image 미존재
+### 11.8 `ModuleNotFoundError: No module named 'faiss'` (M7 MASt3R-SLAM)
+
+증상: P9 Stage 1 진입 시 `mast3r/retrieval/processor.py` 가 `import faiss` 에서 fail.
+
+원인: MASt3R 의 retrieval 모듈이 Facebook AI 의 vector similarity library `faiss` 사용. m7 image 의 pip install 목록에 누락.
+
+해결 — Dockerfile 영구 fix 완료 + ad-hoc 으로 rebuild 없이 즉시 fix 가능:
+
+**Ad-hoc (rebuild 없이; 5분 안):**
+```bash
+# 임시 container 시작
+docker run -d --name temp-m7 --entrypoint sleep ars/m7_mast3r_slam:latest 3600
+
+# faiss-cpu install
+docker exec temp-m7 pip install faiss-cpu
+
+# 새 image 로 commit (기존 tag 덮어쓰기)
+docker commit temp-m7 ars/m7_mast3r_slam:latest
+
+# 임시 container 제거
+docker rm -f temp-m7
+
+# 검증
+docker run --rm --entrypoint python ars/m7_mast3r_slam:latest \
+    -c "import faiss; print('faiss', faiss.__version__)"
+```
+
+**또는 Dockerfile rebuild (영구):**
+```bash
+cd /scratch/minsuh/Industrial-3DRecon-Benchmark
+git pull origin main
+bash experiments/scripts/verify_dockers.sh m7   # ~15-25 min
+```
+
+각 host 마다 한 번씩. 다른 host 에 distribute 하려면 `docker save / load`.
+
+### 11.9 `pull access denied for ars/...` — image 미존재
 
 새 서버에서 `verify_dockers.sh --skip-build` 실행 시 image pull 실패. 원인 — image 가 local-only (registry 미등록), `--skip-build` 로 build 도 안 함.
 
@@ -641,7 +677,7 @@ docker run --rm --entrypoint python \
 - **옵션 A:** build 새로 실행 — `bash verify_dockers.sh` (--skip-build 제거, ~50–75 min)
 - **옵션 B:** 기존 서버에서 export → 새 서버 import (§10.1)
 
-### 11.9 Diagnostic 1-shot — frames 디렉토리 상태 점검
+### 11.10 Diagnostic 1-shot — frames 디렉토리 상태 점검
 
 `run_pipeline_p1.sh` fail 시 가장 먼저 실행:
 ```bash
