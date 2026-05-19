@@ -254,12 +254,13 @@ if [ "${SKIP_REP}" -eq 0 ]; then
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m9" \
         "${M9_IMAGE}" \
+        # GPU 활용 우선 정책 (PAPER §3.6 F2; P1 과 동일 hyperparameter)
         python /opt/two_dgs/train.py \
             --source_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose_undistorted" \
             --model_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/recon" \
             --iterations "${ITERATIONS}" \
-            --resolution 1 \
-            --data_device cpu \
+            --resolution 2 \
+            --data_device cuda \
             --eval \
             2>&1 | tee "${LOG_DIR}/m9_2dgs.log"
 

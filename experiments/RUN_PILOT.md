@@ -526,23 +526,23 @@ docker run --rm \
 
 ### 11.4 `torch.cuda.OutOfMemoryError` — 3DGS/2DGS train 시 GPU OOM
 
-증상: P1 Stage 2 (M8 3DGS) 또는 P9 Stage 3 (M9 2DGS) 의 "Loading Test Cameras" 직후 `torch.cuda.OutOfMemoryError`. 본인 process 가 GPU 23 GiB+ 사용 후 추가 26 MiB 못 할당하는 형태.
+증상: P1 Stage 2 (M8 3DGS) 또는 P9 Stage 3 (M9 2DGS) 의 "Loading Test Cameras" 직후 `torch.cuda.OutOfMemoryError`.
 
-원인: 3DGS upstream `--data_device` default 가 `cuda` → 모든 frame (730+) 의 1920×1080 image 를 GPU 에 적재. 단일 4090 (24 GiB) 한계 초과.
+원인: 3DGS upstream 의 default 가 `--data_device cuda` + `--resolution 1` (full HD) 라 모든 frame 의 1920×1080 image 를 GPU 에 적재 → 단일 4090 24 GiB 한계 초과 (730 frame 기준 ~22 GiB).
 
-해결 — 영구 fix 완료 (`git pull` 후 재시도):
-- `run_pipeline_p1.sh` 의 3DGS train docker call 에 `--data_device cpu` 추가
-- `run_pipeline_p9.sh` 의 2DGS train docker call 동일 추가
-- 이후 image 는 CPU 메모리에 적재, batch 단위로 GPU 전송 → GPU 메모리 ~6 GiB 으로 감소
+해결 — 영구 fix 완료 (`git pull` 후 재시도). **GPU 활용 우선 정책 (PAPER §3.6 F2)**:
+- `run_pipeline_p1.sh` 의 3DGS train docker call 에 `--resolution 2` + `--data_device cuda` 명시
+- `run_pipeline_p9.sh` 의 2DGS train docker call 동일 설정
+- 결과: image 1920×1080 → 960×540 다운샘플, GPU 적재 시 ~5-6 GiB, 단일 4090 안전
 
 Trade-off:
-- Quality: 동일 (image bit-perfect 전송)
-- Wall-time: +20-30% (CPU↔GPU 전송 overhead)
-- GPU memory: 23 GiB → ~6 GiB (단일 4090 안전)
+- Quality: PSNR -1~2 dB / SSIM 약간 감소 (resolution downsample 결과 — PAPER §5.5 L9 명시)
+- Wall-time: full-res cpu 대비 ~30% 단축 (GPU 활용 + image 1/4)
+- GPU memory: 22 GiB → ~5-6 GiB (단일 4090 안전 + 다른 process 와 공존 가능)
+- Fairness: 모든 9 configurations 에 동일 적용 — inter-configuration ranking 보존
 
 ad-hoc 적용 (git pull 안 하고 즉시):
 ```bash
-# script 의 docker run 명령을 직접 복사하여 --data_device cpu 추가하여 실행
 docker run --rm --gpus '"device=1"' \
     --user "$(id -u):$(id -g)" \
     -v /data/minsuh/experiment/data:/data \
@@ -550,8 +550,8 @@ docker run --rm --gpus '"device=1"' \
     python /opt/gaussian_splatting/train.py \
         --source_path /data/outputs/P1/I-1/run-01/pose_undistorted \
         --model_path  /data/outputs/P1/I-1/run-01/recon \
-        --iterations 30000 --resolution 1 \
-        --data_device cpu --eval
+        --iterations 30000 \
+        --resolution 2 --data_device cuda --eval
 ```
 
 ### 11.5 `pull access denied for ars/...` — image 미존재

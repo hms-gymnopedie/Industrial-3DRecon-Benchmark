@@ -207,12 +207,16 @@ if [ "${SKIP_REP}" -eq 0 ]; then
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m8" \
         "${M8_IMAGE}" \
+        # GPU 활용 우선 정책 (PAPER §3.6 F2):
+        #   --resolution 2 = 1920×1080 → 960×540 다운샘플 (image GPU 적재 시
+        #                    메모리 ~5-6 GiB; 단일 4090 24 GiB 충분)
+        #   --data_device cuda = default — image GPU 적재 (wall-time 빠름)
         python /opt/gaussian_splatting/train.py \
             --source_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/pose_undistorted" \
             --model_path "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/recon" \
             --iterations "${ITERATIONS}" \
-            --resolution 1 \
-            --data_device cpu \
+            --resolution 2 \
+            --data_device cuda \
             --eval \
             2>&1 | tee "${LOG_DIR}/m8_3dgs.log"
 else
