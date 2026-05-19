@@ -642,15 +642,19 @@ docker run --rm --entrypoint python \
 해결 — Dockerfile 영구 fix 완료 (일괄 추가 + silent skip 제거). Ad-hoc 으로도 5-10분 안에 fix 가능:
 
 **Ad-hoc (rebuild 없이; 모든 누락 일괄):**
+
+> **중요:** asmk 는 PyPI 미존재 + Cython source build 필수. `pip install git+...asmk.git` 은 .pyx 컴파일 결과를 site-packages 에 올리지 않으므로 fail. naver/mast3r 공식 절차 (clone → cython/ 안에서 setup.py build_ext --inplace → PYTHONPATH 로 노출) 를 그대로 사용.
+
 ```bash
 # 임시 container 시작
 docker run -d --name temp-m7 --entrypoint sleep ars/m7_mast3r_slam:latest 3600
 
-# Cython 먼저 (asmk source build 에 필요)
-docker exec temp-m7 pip install cython
+# 1. 잘못 install 된 asmk 제거 (있으면)
+docker exec temp-m7 pip uninstall -y asmk 2>/dev/null || true
 
-# 일괄 install — PyPI 가능 dependency
+# 2. Cython + 그 외 PyPI dependency 일괄 install
 docker exec temp-m7 pip install \
+    cython \
     faiss-cpu \
     timm \
     kapture \
@@ -660,32 +664,39 @@ docker exec temp-m7 pip install \
     kornia \
     omegaconf
 
-# asmk: source build (PyPI 미존재 가능)
-docker exec temp-m7 pip install --no-build-isolation \
-    git+https://github.com/jenicek/asmk.git
+# 3. asmk source build (정식 절차 — naver/mast3r README 참조)
+docker exec temp-m7 bash -c '
+    cd /opt && \
+    rm -rf asmk && \
+    git clone https://github.com/jenicek/asmk.git && \
+    cd asmk/cython && \
+    python setup.py build_ext --inplace
+'
 
-# mast3r-slam editable install (Dependencies 자동 해결 효과)
+# 4. mast3r-slam editable install (그 외 의존 자동 해결)
 docker exec temp-m7 bash -c "cd /opt/mast3r_slam && pip install --no-build-isolation -e ."
 
-# 검증
-docker exec temp-m7 python -c "
-import faiss, asmk.index, kapture, kapture_localization, timm
-print('faiss', faiss.__version__)
-print('asmk OK')
-print('kapture', kapture.__version__)
-print('timm', timm.__version__)
+# 5. 검증 — PYTHONPATH 에 /opt/asmk 포함 필수
+docker exec temp-m7 bash -c '
+    export PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r:/opt/asmk:$PYTHONPATH
+    python -c "
+import faiss, kapture, timm, pypose, kornia
+print(\"basic OK\")
+import asmk.index
+print(\"asmk.index OK\")
+from mast3r_slam.global_opt import FactorGraph
+print(\"global_opt OK — 모든 import chain 정상\")
 "
+'
 
-# commit 후 cleanup
+# 6. 위 검증 통과 시 commit
 docker commit temp-m7 ars/m7_mast3r_slam:latest
 docker rm -f temp-m7
-
-# 최종 — mast3r_slam import 자체 검증
-docker run --rm --entrypoint python \
-    -e PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r \
-    ars/m7_mast3r_slam:latest \
-    -c "from mast3r_slam.global_opt import FactorGraph; print('global_opt OK')"
 ```
+
+`global_opt OK` 출력되면 m7 image 의 모든 import chain 정상. P9 진입 가능.
+
+**또 다른 module 누락 시:** 정확한 module 이름 + traceback 보내달라 → ad-hoc 명령에 추가.
 
 **또는 Dockerfile rebuild (영구):**
 ```bash

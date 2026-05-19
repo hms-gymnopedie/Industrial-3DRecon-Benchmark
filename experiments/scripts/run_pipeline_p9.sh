@@ -129,7 +129,7 @@ if [ "${SKIP_POSE}" -eq 0 ]; then
         --gpus "\"device=${GPU_POSE}\"" \
         --user "$(id -u):$(id -g)" \
         --entrypoint python \
-        -e PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r:/opt/mast3r_slam/thirdparty/in3d \
+        -e PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r:/opt/mast3r_slam/thirdparty/in3d:/opt/asmk \
         -v "${DATA_ROOT}:/data" \
         -v "${WEIGHTS_DIR}:/weights" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m7" \
@@ -165,7 +165,7 @@ if [ "${SKIP_ADAPT}" -eq 0 ]; then
     docker run --rm \
         --user "$(id -u):$(id -g)" \
         --entrypoint python \
-        -e PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r \
+        -e PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r:/opt/asmk \
         -v "${DATA_ROOT}:/data" \
         -v "${REPO_ROOT}/experiments/adapters:/adapters" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-adapter" \

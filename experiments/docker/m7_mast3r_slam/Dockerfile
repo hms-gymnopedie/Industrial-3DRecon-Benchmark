@@ -72,11 +72,15 @@ RUN pip install \
         kornia \
         omegaconf
 
-# asmk: source build (PyPI 미존재 가능; cython 컴파일 가능)
-RUN pip install --no-cache-dir --no-build-isolation \
-        cython && \
-    pip install --no-cache-dir --no-build-isolation \
-        git+https://github.com/jenicek/asmk.git
+# asmk: naver/mast3r 공식 install 절차 (PyPI 미존재 — Cython source build).
+# `pip install git+` 는 .pyx → .so 컴파일 결과를 site-packages 에 올리지 못함.
+# 정식 절차: clone → cython/ 안에서 setup.py build_ext --inplace.
+# 결과 폴더를 PYTHONPATH 로 직접 노출 (ENV 갱신 아래 참조).
+RUN pip install --no-cache-dir cython && \
+    cd /opt && \
+    git clone https://github.com/jenicek/asmk.git && \
+    cd asmk/cython && \
+    python setup.py build_ext --inplace
 
 # lietorch: source build with --no-build-isolation 으로 본 image 의 PyTorch
 # 2.1.0+cu118 사용. pip 의 prebuilt wheel 은 다른 PyTorch ABI 로 build 되어
@@ -93,7 +97,8 @@ RUN pip install --no-build-isolation -e .
 
 # MASt3R-SLAM 의 mast3r / dust3r 등은 thirdparty/ 아래에 nested submodule 로 위치.
 # import mast3r.xxx 가 가능하려면 그 부모 디렉토리가 PYTHONPATH 에 있어야 함.
-ENV PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r:/opt/mast3r_slam/thirdparty/in3d:$PYTHONPATH
+# asmk 도 /opt/asmk 에 cython source build 후 PYTHONPATH 노출.
+ENV PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r:/opt/mast3r_slam/thirdparty/in3d:/opt/asmk:$PYTHONPATH
 
 # ------------------------------------------------------------
 # Weight directory mountpoint
