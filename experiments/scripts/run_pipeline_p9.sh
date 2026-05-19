@@ -122,10 +122,14 @@ if [ "${SKIP_POSE}" -eq 0 ]; then
     echo "----------------------------------------------------------------"
     # NOTE: upstream MASt3R-SLAM의 정확한 entrypoint (main.py 위치/CLI flag)는
     # repo 검수 시점에 조정 필요. 본 호출은 표준 wrapper 가정.
+    # PYTHONPATH override — Dockerfile 의 ENV 값이 잘못된 path (/opt/mast3r_slam/mast3r,
+    # 존재 안 함) 를 가리키고 실제 mast3r 는 thirdparty/ 아래에 있음. 본 override 로
+    # rebuild 없이 import 정상화. Next image rebuild 시 Dockerfile fix 도 반영됨.
     docker run --rm \
         --gpus "\"device=${GPU_POSE}\"" \
         --user "$(id -u):$(id -g)" \
         --entrypoint python \
+        -e PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r:/opt/mast3r_slam/thirdparty/in3d \
         -v "${DATA_ROOT}:/data" \
         -v "${WEIGHTS_DIR}:/weights" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m7" \
@@ -161,6 +165,7 @@ if [ "${SKIP_ADAPT}" -eq 0 ]; then
     docker run --rm \
         --user "$(id -u):$(id -g)" \
         --entrypoint python \
+        -e PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r \
         -v "${DATA_ROOT}:/data" \
         -v "${REPO_ROOT}/experiments/adapters:/adapters" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-adapter" \

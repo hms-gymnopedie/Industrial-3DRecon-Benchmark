@@ -73,7 +73,9 @@ RUN pip install --no-cache-dir --no-build-isolation \
 # falls back to PYTHONPATH-only use.
 RUN pip install -e . || echo "[warn] editable install unavailable — relying on PYTHONPATH"
 
-ENV PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/mast3r:/opt/mast3r_slam/croco:$PYTHONPATH
+# MASt3R-SLAM 의 mast3r / dust3r 등은 thirdparty/ 아래에 nested submodule 로 위치.
+# import mast3r.xxx 가 가능하려면 그 부모 디렉토리가 PYTHONPATH 에 있어야 함.
+ENV PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r:/opt/mast3r_slam/thirdparty/in3d:$PYTHONPATH
 
 # ------------------------------------------------------------
 # Weight directory mountpoint

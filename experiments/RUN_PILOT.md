@@ -615,7 +615,25 @@ docker run --rm --entrypoint python ars/m7_mast3r_slam:latest \
     -c "import lietorch; print('OK')"
 ```
 
-### 11.7 `pull access denied for ars/...` — image 미존재
+### 11.7 `ModuleNotFoundError: No module named 'mast3r'` (M7 MASt3R-SLAM)
+
+증상: P9 Stage 1 (M7 MASt3R-SLAM) 진입 시 `ModuleNotFoundError: No module named 'mast3r'`.
+
+원인: MASt3R-SLAM repo 의 `mast3r` submodule 이 `/opt/mast3r_slam/thirdparty/mast3r/` 에 *nested* 되어 있는데, Dockerfile 의 PYTHONPATH 는 `/opt/mast3r_slam/mast3r` (존재 안 함) 를 가리킴.
+
+해결 — 영구 fix 완료 (`git pull` 후 자동 적용; rebuild 없이 즉시 동작):
+- `run_pipeline_p9.sh` 의 Stage 1 + Stage 2 docker run 에 `-e PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r:/opt/mast3r_slam/thirdparty/in3d` 추가
+- m7 Dockerfile 의 `ENV PYTHONPATH` 도 동일하게 수정 (next rebuild 시 redundant 정합)
+
+ad-hoc 검증 (rebuild 없이 시도):
+```bash
+docker run --rm --entrypoint python \
+    -e PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r \
+    ars/m7_mast3r_slam:latest \
+    -c "from mast3r_slam.global_opt import FactorGraph; print('OK')"
+```
+
+### 11.8 `pull access denied for ars/...` — image 미존재
 
 새 서버에서 `verify_dockers.sh --skip-build` 실행 시 image pull 실패. 원인 — image 가 local-only (registry 미등록), `--skip-build` 로 build 도 안 함.
 
@@ -623,7 +641,7 @@ docker run --rm --entrypoint python ars/m7_mast3r_slam:latest \
 - **옵션 A:** build 새로 실행 — `bash verify_dockers.sh` (--skip-build 제거, ~50–75 min)
 - **옵션 B:** 기존 서버에서 export → 새 서버 import (§10.1)
 
-### 11.8 Diagnostic 1-shot — frames 디렉토리 상태 점검
+### 11.9 Diagnostic 1-shot — frames 디렉토리 상태 점검
 
 `run_pipeline_p1.sh` fail 시 가장 먼저 실행:
 ```bash
