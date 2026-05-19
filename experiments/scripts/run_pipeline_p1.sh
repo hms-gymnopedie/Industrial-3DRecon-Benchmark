@@ -229,6 +229,35 @@ T_REP_END=$(date +%s)
 T_REP=$(( T_REP_END - T_REP_START ))
 
 # ---------------------------------------------------------------
+# Stage 2.5: M8 metrics.py — PSNR/SSIM/LPIPS 측정 → results.json
+#   3DGS upstream 의 train.py 는 학습만 수행. PSNR/SSIM/LPIPS 는 metrics.py 가
+#   별도로 계산하여 recon/results.json 으로 출력. 본 results.json 이
+#   compute_metrics.py 의 직접 입력 → metrics.json 의 psnr/ssim/lpips 필드.
+#   Idempotent: results.json 이 이미 있으면 skip.
+# ---------------------------------------------------------------
+if [ "${SKIP_REP}" -eq 0 ]; then
+    if [ -f "${RECON_DIR}/results.json" ]; then
+        echo
+        echo "[skip] Stage 2.5 (metrics.py) — results.json 이미 존재"
+    else
+        echo
+        echo "----------------------------------------------------------------"
+        echo "  Stage 2.5: M8 3DGS metrics.py (PSNR/SSIM/LPIPS)"
+        echo "----------------------------------------------------------------"
+        docker run --rm \
+            --gpus "\"device=${GPU_REP}\"" \
+            --user "$(id -u):$(id -g)" \
+            --entrypoint python \
+            -v "${DATA_ROOT}:/data" \
+            --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m8-metrics" \
+            "${M8_IMAGE}" \
+            /opt/gaussian_splatting/metrics.py \
+                --model_paths "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/recon" \
+                2>&1 | tee -a "${LOG_DIR}/m8_3dgs.log"
+    fi
+fi
+
+# ---------------------------------------------------------------
 # Metrics aggregation
 # ---------------------------------------------------------------
 echo

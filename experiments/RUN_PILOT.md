@@ -252,11 +252,14 @@ bash experiments/scripts/run_pipeline_p1.sh \
 **P1 stage 1 (COLMAP) 종료 직후, site 공유 intrinsics 추출:**
 
 ```bash
+# NOTE: ars/m1_colmap image 에 python 미포함 (COLMAP base) — m8_3dgs 재활용
 docker run --rm \
+    --user "$(id -u):$(id -g)" \
+    --entrypoint python \
     -v "${DATA_ROOT}":/data \
     -v "$(pwd)/experiments/adapters":/adapters \
-    ars/m1_colmap:3.9.1 \
-    python /adapters/colmap_to_intrinsics.py \
+    ars/m8_3dgs:latest \
+    /adapters/colmap_to_intrinsics.py \
         --cameras /data/outputs/P1/I-1/run-01/pose/sparse/0/cameras.bin \
         --output  /data/sites/I-1/calib/intrinsics.json
 ```
@@ -323,12 +326,18 @@ for SITE in I-1 I-2 I-3 L-1 L-2 L-3; do
 done
 
 # P1 결과 6 site 의 intrinsics 추출
+# NOTE: ars/m1_colmap image 에 python 미포함 (COLMAP base 라 불필요).
+#       intrinsics 추출은 numpy 만 의존하므로 m8_3dgs (python+numpy 보유) 재활용.
 for SITE in I-1 I-2 I-3 L-1 L-2 L-3; do
+    CAM=${DATA_ROOT}/outputs/P1/${SITE}/run-01/pose/sparse/0/cameras.bin
+    [ -f "$CAM" ] || { echo "[skip] ${SITE}: P1 미완료"; continue; }
     docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        --entrypoint python \
         -v "${DATA_ROOT}":/data \
         -v "$(pwd)/experiments/adapters":/adapters \
-        ars/m1_colmap:3.9.1 \
-        python /adapters/colmap_to_intrinsics.py \
+        ars/m8_3dgs:latest \
+        /adapters/colmap_to_intrinsics.py \
             --cameras /data/outputs/P1/${SITE}/run-01/pose/sparse/0/cameras.bin \
             --output  /data/sites/${SITE}/calib/intrinsics.json
 done

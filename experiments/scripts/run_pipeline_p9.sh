@@ -290,6 +290,34 @@ T_REP_END=$(date +%s)
 T_REP=$(( T_REP_END - T_REP_START ))
 
 # ---------------------------------------------------------------
+# Stage 3.5: M9 metrics.py — PSNR/SSIM/LPIPS 측정 → results.json
+#   2DGS upstream 의 train.py 는 학습만 수행. PSNR/SSIM/LPIPS 는 metrics.py 가
+#   별도로 계산. compute_metrics.py 가 results.json 을 읽어 metrics.json 에 합성.
+#   Idempotent: results.json 이 이미 있으면 skip.
+# ---------------------------------------------------------------
+if [ "${SKIP_REP}" -eq 0 ]; then
+    if [ -f "${RECON_DIR}/results.json" ]; then
+        echo
+        echo "[skip] Stage 3.5 (metrics.py) — results.json 이미 존재"
+    else
+        echo
+        echo "----------------------------------------------------------------"
+        echo "  Stage 3.5: M9 2DGS metrics.py (PSNR/SSIM/LPIPS)"
+        echo "----------------------------------------------------------------"
+        docker run --rm \
+            --gpus "\"device=${GPU_REP}\"" \
+            --user "$(id -u):$(id -g)" \
+            --entrypoint python \
+            -v "${DATA_ROOT}:/data" \
+            --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m9-metrics" \
+            "${M9_IMAGE}" \
+            /opt/two_dgs/metrics.py \
+                --model_paths "/data/outputs/${PIPELINE_ID}/${SITE}/${RUN}/recon" \
+                2>&1 | tee -a "${LOG_DIR}/m9_2dgs.log"
+    fi
+fi
+
+# ---------------------------------------------------------------
 # Metrics aggregation
 # ---------------------------------------------------------------
 echo
