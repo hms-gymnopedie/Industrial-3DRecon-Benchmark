@@ -125,6 +125,7 @@ if [ "${SKIP_POSE}" -eq 0 ]; then
     docker run --rm \
         --gpus "\"device=${GPU_POSE}\"" \
         --user "$(id -u):$(id -g)" \
+        --entrypoint "" \
         -v "${DATA_ROOT}:/data" \
         -v "${WEIGHTS_DIR}:/weights" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m7" \
@@ -159,6 +160,7 @@ if [ "${SKIP_ADAPT}" -eq 0 ]; then
 
     docker run --rm \
         --user "$(id -u):$(id -g)" \
+        --entrypoint "" \
         -v "${DATA_ROOT}:/data" \
         -v "${REPO_ROOT}/experiments/adapters:/adapters" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-adapter" \
@@ -209,6 +211,7 @@ if [ "${SKIP_UNDISTORT}" -eq 0 ] && [ "${UNDISTORT_DONE}" -eq 0 ]; then
     docker run --rm \
         --gpus "\"device=${GPU_POSE}\"" \
         --user "$(id -u):$(id -g)" \
+        --entrypoint "" \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-undistort" \
         "${M1_IMAGE}" \
@@ -251,6 +254,7 @@ if [ "${SKIP_REP}" -eq 0 ]; then
     docker run --rm \
         --gpus "\"device=${GPU_REP}\"" \
         --user "$(id -u):$(id -g)" \
+        --entrypoint "" \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m9" \
         "${M9_IMAGE}" \
@@ -270,6 +274,7 @@ if [ "${SKIP_REP}" -eq 0 ]; then
     docker run --rm \
         --gpus "\"device=${GPU_REP}\"" \
         --user "$(id -u):$(id -g)" \
+        --entrypoint "" \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m9-mesh" \
         "${M9_IMAGE}" \

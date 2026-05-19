@@ -554,7 +554,28 @@ docker run --rm --gpus '"device=1"' \
         --resolution 2 --data_device cuda --eval
 ```
 
-### 11.5 `pull access denied for ars/...` — image 미존재
+### 11.5 `python: can't open file '/opt/gaussian_splatting/train.py'` (3DGS/2DGS) — ENTRYPOINT 충돌
+
+증상: P1 Stage 2 (M8 3DGS) 또는 P9 Stage 3 (M9 2DGS) 진입 시:
+```
+3DGS rasterizer + simple_knn OK
+python: can't open file '/opt/gaussian_splatting/train.py': [Errno 2] No such file or directory
+```
+
+원인: m8/m9 image 의 ENTRYPOINT (`/opt/nvidia/nvidia_entrypoint.sh`) 가 `--user "$(id -u):$(id -g)"` flag 와 충돌. user 권한 detection 후 default CMD (smoke test "3DGS rasterizer + simple_knn OK") 가 먼저 실행되고 user 지정 명령은 손실됨. (image 의 train.py 자체는 정상 존재 + world-readable.)
+
+해결 — 영구 fix 완료 (`git pull` 후 재시도): 모든 docker run 에 `--entrypoint ""` 추가하여 image 의 ENTRYPOINT 무력화. user 지정 명령이 직접 실행됨.
+
+검증 우회 명령:
+```bash
+docker run --rm --user "$(id -u):$(id -g)" \
+    --entrypoint /bin/bash \
+    ars/m8_3dgs:latest \
+    -c 'python /opt/gaussian_splatting/train.py --help'
+```
+위 명령이 train.py --help 정상 출력하면 ENTRYPOINT 우회로 해결됨.
+
+### 11.6 `pull access denied for ars/...` — image 미존재
 
 새 서버에서 `verify_dockers.sh --skip-build` 실행 시 image pull 실패. 원인 — image 가 local-only (registry 미등록), `--skip-build` 로 build 도 안 함.
 
@@ -562,7 +583,7 @@ docker run --rm --gpus '"device=1"' \
 - **옵션 A:** build 새로 실행 — `bash verify_dockers.sh` (--skip-build 제거, ~50–75 min)
 - **옵션 B:** 기존 서버에서 export → 새 서버 import (§10.1)
 
-### 11.6 Diagnostic 1-shot — frames 디렉토리 상태 점검
+### 11.7 Diagnostic 1-shot — frames 디렉토리 상태 점검
 
 `run_pipeline_p1.sh` fail 시 가장 먼저 실행:
 ```bash

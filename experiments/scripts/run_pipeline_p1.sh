@@ -105,6 +105,7 @@ if [ "${SKIP_POSE}" -eq 0 ]; then
     docker run --rm \
         --gpus "\"device=${GPU_POSE}\"" \
         --user "$(id -u):$(id -g)" \
+        --entrypoint "" \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m1" \
         "${M1_IMAGE}" \
@@ -162,6 +163,7 @@ if [ "${SKIP_UNDISTORT}" -eq 0 ] && [ "${UNDISTORT_DONE}" -eq 0 ]; then
     docker run --rm \
         --gpus "\"device=${GPU_POSE}\"" \
         --user "$(id -u):$(id -g)" \
+        --entrypoint "" \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-undistort" \
         "${M1_IMAGE}" \
@@ -204,6 +206,7 @@ if [ "${SKIP_REP}" -eq 0 ]; then
     docker run --rm \
         --gpus "\"device=${GPU_REP}\"" \
         --user "$(id -u):$(id -g)" \
+        --entrypoint "" \
         -v "${DATA_ROOT}:/data" \
         --name "ars-${PIPELINE_ID}-${SITE}-${RUN}-m8" \
         "${M8_IMAGE}" \
