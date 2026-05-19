@@ -633,41 +633,70 @@ docker run --rm --entrypoint python \
     -c "from mast3r_slam.global_opt import FactorGraph; print('OK')"
 ```
 
-### 11.8 `ModuleNotFoundError: No module named 'faiss'` (M7 MASt3R-SLAM)
+### 11.8 M7 dependency 일괄 누락 (`faiss`, `asmk`, `kapture`, ...) — silent setup.py fail
 
-증상: P9 Stage 1 진입 시 `mast3r/retrieval/processor.py` 가 `import faiss` 에서 fail.
+증상: P9 Stage 1 진입 시 `ModuleNotFoundError` 가 cascade (`faiss` → 해결 후 `asmk.index` → 해결 후 또 다른 module ...).
 
-원인: MASt3R 의 retrieval 모듈이 Facebook AI 의 vector similarity library `faiss` 사용. m7 image 의 pip install 목록에 누락.
+원인: m7 Dockerfile 의 `pip install -e .` 가 `|| echo` 로 silent fail 처리 — mast3r-slam 의 setup.py / pyproject.toml 가 정의한 dependency chain 전체가 미설치. retrieval (faiss, asmk, kapture, kapture-localization, timm) + 기타 (pypose, kornia, omegaconf, pyflann-py3) 누락.
 
-해결 — Dockerfile 영구 fix 완료 + ad-hoc 으로 rebuild 없이 즉시 fix 가능:
+해결 — Dockerfile 영구 fix 완료 (일괄 추가 + silent skip 제거). Ad-hoc 으로도 5-10분 안에 fix 가능:
 
-**Ad-hoc (rebuild 없이; 5분 안):**
+**Ad-hoc (rebuild 없이; 모든 누락 일괄):**
 ```bash
 # 임시 container 시작
 docker run -d --name temp-m7 --entrypoint sleep ars/m7_mast3r_slam:latest 3600
 
-# faiss-cpu install
-docker exec temp-m7 pip install faiss-cpu
+# Cython 먼저 (asmk source build 에 필요)
+docker exec temp-m7 pip install cython
 
-# 새 image 로 commit (기존 tag 덮어쓰기)
-docker commit temp-m7 ars/m7_mast3r_slam:latest
+# 일괄 install — PyPI 가능 dependency
+docker exec temp-m7 pip install \
+    faiss-cpu \
+    timm \
+    kapture \
+    kapture-localization \
+    pyflann-py3 \
+    pypose \
+    kornia \
+    omegaconf
 
-# 임시 container 제거
-docker rm -f temp-m7
+# asmk: source build (PyPI 미존재 가능)
+docker exec temp-m7 pip install --no-build-isolation \
+    git+https://github.com/jenicek/asmk.git
+
+# mast3r-slam editable install (Dependencies 자동 해결 효과)
+docker exec temp-m7 bash -c "cd /opt/mast3r_slam && pip install --no-build-isolation -e ."
 
 # 검증
-docker run --rm --entrypoint python ars/m7_mast3r_slam:latest \
-    -c "import faiss; print('faiss', faiss.__version__)"
+docker exec temp-m7 python -c "
+import faiss, asmk.index, kapture, kapture_localization, timm
+print('faiss', faiss.__version__)
+print('asmk OK')
+print('kapture', kapture.__version__)
+print('timm', timm.__version__)
+"
+
+# commit 후 cleanup
+docker commit temp-m7 ars/m7_mast3r_slam:latest
+docker rm -f temp-m7
+
+# 최종 — mast3r_slam import 자체 검증
+docker run --rm --entrypoint python \
+    -e PYTHONPATH=/opt/mast3r_slam:/opt/mast3r_slam/thirdparty/mast3r:/opt/mast3r_slam/thirdparty/mast3r/dust3r \
+    ars/m7_mast3r_slam:latest \
+    -c "from mast3r_slam.global_opt import FactorGraph; print('global_opt OK')"
 ```
 
 **또는 Dockerfile rebuild (영구):**
 ```bash
 cd /scratch/minsuh/Industrial-3DRecon-Benchmark
 git pull origin main
-bash experiments/scripts/verify_dockers.sh m7   # ~15-25 min
+bash experiments/scripts/verify_dockers.sh m7   # ~20-30 min (dependency 증가로 lietorch 보다 약간 늘어남)
 ```
 
 각 host 마다 한 번씩. 다른 host 에 distribute 하려면 `docker save / load`.
+
+**만약 final 검증 명령에서 또 ModuleNotFoundError**: 누락된 module 이름 + traceback 보내달라 → 추가 fix.
 
 ### 11.9 `pull access denied for ars/...` — image 미존재
 

@@ -44,6 +44,8 @@ WORKDIR /opt/mast3r_slam
 
 # Python dependency stack (commonly required by MASt3R/Croco ecosystem)
 # Pinned conservatively to compatible Numpy/SciPy era with PyTorch 2.1.
+# PyPI dependency 일괄 — mast3r-slam + mast3r/retrieval + dust3r/croco 의 합집합.
+# silent skip 회피를 위해 single RUN 으로 묶음 (한 줄이라도 fail 시 build 실패).
 RUN pip install \
         numpy==1.26.4 \
         scipy==1.11.4 \
@@ -61,7 +63,20 @@ RUN pip install \
         scikit-image \
         plyfile \
         evo \
-        faiss-cpu
+        faiss-cpu \
+        timm \
+        kapture \
+        kapture-localization \
+        pyflann-py3 \
+        pypose \
+        kornia \
+        omegaconf
+
+# asmk: source build (PyPI 미존재 가능; cython 컴파일 가능)
+RUN pip install --no-cache-dir --no-build-isolation \
+        cython && \
+    pip install --no-cache-dir --no-build-isolation \
+        git+https://github.com/jenicek/asmk.git
 
 # lietorch: source build with --no-build-isolation 으로 본 image 의 PyTorch
 # 2.1.0+cu118 사용. pip 의 prebuilt wheel 은 다른 PyTorch ABI 로 build 되어
@@ -70,9 +85,11 @@ RUN pip install --no-cache-dir --no-build-isolation \
         git+https://github.com/princeton-vl/lietorch.git
 
 # Editable install of MASt3R-SLAM package (per repo convention).
-# If the repo lacks setup.py / pyproject.toml at root, the editable install
-# falls back to PYTHONPATH-only use.
-RUN pip install -e . || echo "[warn] editable install unavailable — relying on PYTHONPATH"
+# Silent fail (|| echo) 제거 — setup.py 가 실패하면 dependency chain 누락으로
+# 런타임 ModuleNotFoundError 가 cascade. 명시적 build 실패가 더 진단 쉬움.
+# 만약 repo 에 setup.py/pyproject.toml 부재 시 PYTHONPATH 의존 — 단 그 경우는
+# Dockerfile 측에서 별도 확인 필요 (현재 mast3r-slam upstream 은 pyproject.toml 보유).
+RUN pip install --no-build-isolation -e .
 
 # MASt3R-SLAM 의 mast3r / dust3r 등은 thirdparty/ 아래에 nested submodule 로 위치.
 # import mast3r.xxx 가 가능하려면 그 부모 디렉토리가 PYTHONPATH 에 있어야 함.
